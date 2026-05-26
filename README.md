@@ -410,6 +410,28 @@ ns-process-data images \
 
 There is no enable/disable boolean. In this fork, serialized dataparser metadata is part of the processed dataset contract and is produced whenever `ns-process-data` successfully creates the dataset.
 
+### Training-Time Contract Loading
+
+`ns-train` now consumes the frozen contract automatically for Nerfstudio-format datasets. When the selected dataset contains:
+
+```text
+metadata/dataparser/contract.json
+```
+
+the `Nerfstudio` dataparser loads the serialized train/test `DataparserOutputs` from that file instead of recomputing camera normalization, scene scale, scene box, or train/eval splits from `transforms.json`. If the contract is absent, the normal Nerfstudio dataparser path remains available as a fallback for legacy datasets.
+
+This makes the processed dataset the authority for the normalized model space:
+
+```text
+ns-process-data
+  -> writes transforms.json
+  -> freezes metadata/dataparser/contract.json
+
+ns-train
+  -> reads metadata/dataparser/contract.json
+  -> uses the same cameras, scene box, transform, scale, and splits
+```
+
 ## Validation Plan
 
 The validation should check that the serialized contract is actually invariant:
