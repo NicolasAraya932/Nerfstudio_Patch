@@ -276,6 +276,98 @@ dataparsers should not import process_data
 
 That avoids circular dependencies and preserves the conceptual split: process-data builds and freezes the dataset contract; training loads and consumes it.
 
+### Tyro CLI Integration Options
+
+There are two viable ways to expose this through `tyro`.
+
+The first option is to expose the full dataparser config API directly in `ns-process-data`. Nerfstudio already aggregates dataparser configs in:
+
+```text
+nerfstudio/configs/dataparser_configs.py
+```
+
+The relevant type is:
+
+```python
+from nerfstudio.configs.dataparser_configs import AnnotatedDataParserUnion
+```
+
+A base converter could then expose a dataparser field:
+
+```python
+from dataclasses import field
+from nerfstudio.configs.dataparser_configs import AnnotatedDataParserUnion
+from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+
+@dataclass
+class BaseConverterToNerfstudioDataset(ABC):
+    ...
+    save_dataparser_contract: bool = False
+    dataparser: AnnotatedDataParserUnion = field(default_factory=NerfstudioDataParserConfig)
+```
+
+Because all process-data commands inherit from `BaseConverterToNerfstudioDataset`, `tyro` would expose the dataparser config for images, video, Polycam, Record3D, ODM, and the other converters. Before serialization, the converter must force the dataparser input path to the processed dataset, not the raw input path:
+
+```python
+self.dataparser.data = self.output_dir
+serialize_dataparser_contract(
+    dataset_dir=self.output_dir,
+    dataparser_config=self.dataparser,
+)
+```
+
+This gives maximum flexibility, but it may make the command line more complex because `tyro` will expose a nested dataparser subcommand/union inside every `ns-process-data` command.
+
+The second option is the recommended first implementation: expose a small contract-specific config through `tyro`, then internally construct `NerfstudioDataParserConfig`. For example:
+
+```python
+@dataclass
+class DataparserContractConfig:
+    enabled: bool = False
+    eval_mode: Literal["fraction", "filename", "interval", "all"] = "fraction"
+    train_split_fraction: float = 0.9
+    eval_interval: int = 8
+    orientation_method: Literal["pca", "up", "vertical", "none"] = "none"
+    center_method: Literal["poses", "focus", "none"] = "poses"
+    auto_scale_poses: bool = True
+    scene_scale: float = 1.0
+    scale_factor: float = 1.0
+```
+
+Then the base converter can own a single field:
+
+```python
+@dataclass
+class BaseConverterToNerfstudioDataset(ABC):
+    ...
+    dataparser_contract: DataparserContractConfig = field(default_factory=DataparserContractConfig)
+```
+
+The serializer can build the dataparser config internally:
+
+```python
+config = NerfstudioDataParserConfig(
+    data=self.output_dir,
+    eval_mode=self.dataparser_contract.eval_mode,
+    train_split_fraction=self.dataparser_contract.train_split_fraction,
+    eval_interval=self.dataparser_contract.eval_interval,
+    orientation_method=self.dataparser_contract.orientation_method,
+    center_method=self.dataparser_contract.center_method,
+    auto_scale_poses=self.dataparser_contract.auto_scale_poses,
+    scene_scale=self.dataparser_contract.scene_scale,
+    scale_factor=self.dataparser_contract.scale_factor,
+)
+```
+
+This keeps `ns-process-data` cleaner while still making the frozen contract available to all converters. The full `AnnotatedDataParserUnion` approach can be added later if non-Nerfstudio-format dataparsers need to be selected from the process-data command line.
+
+The preferred implementation order is therefore:
+
+1. Add `DataparserContractConfig` and universal base-converter plumbing.
+2. Serialize a Nerfstudio-format contract after `transforms.json` exists.
+3. Validate invariant scene box, transform, scale, and split across Nerfacto and InvNeRF-style training.
+4. Only then consider exposing the full `AnnotatedDataParserUnion` in `ns-process-data`.
+
 ## Validation Plan
 
 The validation should check that the serialized contract is actually invariant:
