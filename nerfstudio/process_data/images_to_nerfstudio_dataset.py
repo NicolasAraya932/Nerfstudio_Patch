@@ -85,7 +85,8 @@ class ImagesToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
             binary_output_dir = self.output_dir / "binary_imgs"
             binary_output_dir.mkdir(parents=True, exist_ok=True)
             output_binary = binary_output_dir / f"{output_image.stem}{binary_image.suffix.lower()}"
-            shutil.copy2(binary_image, output_binary)
+            if binary_image.resolve() != output_binary.resolve():
+                shutil.copy2(binary_image, output_binary)
             binary_map[output_image.name] = output_binary.relative_to(self.output_dir).as_posix()
 
         return binary_map
