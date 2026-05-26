@@ -131,6 +131,7 @@ class ImagesToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
             None,
             image_rename_map,
         )
+        summary_log.append(self._save_dataparser_contract())
 
         CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 

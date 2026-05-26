@@ -302,7 +302,6 @@ from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataPars
 @dataclass
 class BaseConverterToNerfstudioDataset(ABC):
     ...
-    save_dataparser_contract: bool = False
     dataparser: AnnotatedDataParserUnion = field(default_factory=NerfstudioDataParserConfig)
 ```
 
@@ -323,7 +322,6 @@ The second option is the recommended first implementation: expose a small contra
 ```python
 @dataclass
 class DataparserContractConfig:
-    enabled: bool = False
     eval_mode: Literal["fraction", "filename", "interval", "all"] = "fraction"
     train_split_fraction: float = 0.9
     eval_interval: int = 8
@@ -359,7 +357,7 @@ config = NerfstudioDataParserConfig(
 )
 ```
 
-This keeps `ns-process-data` cleaner while still making the frozen contract available to all converters. The full `AnnotatedDataParserUnion` approach can be added later if non-Nerfstudio-format dataparsers need to be selected from the process-data command line.
+This keeps `ns-process-data` cleaner while still making the frozen contract available to all converters. There is no enable/disable boolean: serialized dataparser metadata is part of the processed dataset contract. The full `AnnotatedDataParserUnion` approach can be added later if non-Nerfstudio-format dataparsers need to be selected from the process-data command line.
 
 The preferred implementation order is therefore:
 
@@ -368,23 +366,28 @@ The preferred implementation order is therefore:
 3. Validate invariant scene box, transform, scale, and split across Nerfacto and InvNeRF-style training.
 4. Only then consider exposing the full `AnnotatedDataParserUnion` in `ns-process-data`.
 
-### Minimal CLI Implemented First
+### Integrated `ns-process-data` Behavior
 
-The first working step is a separate Tyro command that can be run immediately after `ns-process-data` finishes:
+The first working implementation integrates contract serialization into the existing `ns-process-data` converters instead of requiring a separate public command. After each converter writes `transforms.json`, it calls the shared serializer from:
 
-```bash
-ns-dataparser-contract \
-  --data /path/to/processed_dataset
+```text
+nerfstudio/process_data/dataparser_contract.py
 ```
 
-Equivalent module invocation:
+The integration point is the base converter helper:
 
-```bash
-python -m nerfstudio.scripts.dataparser_contract \
-  --data /path/to/processed_dataset
+```python
+def _save_dataparser_contract(self) -> str:
+    contract_path = serialize_dataparser_contract(
+        self.output_dir,
+        contract=self.dataparser_contract,
+    )
+    return f"Saved dataparser contract to {contract_path}"
 ```
 
-The command writes:
+The helper is called by the process-data converters after dataset creation, for example in `ImagesToNerfstudioDataset` after `_save_transforms(...)`. The same pattern is applied to video and the other process-data sources that write Nerfstudio-format `transforms.json` files.
+
+The generated files are:
 
 ```text
 /path/to/processed_dataset/metadata/dataparser/contract.json
@@ -392,19 +395,20 @@ The command writes:
 /path/to/processed_dataset/metadata/dataparser/splits.json
 ```
 
-The command exposes the small `DataparserContractConfig` through Tyro, for example:
+The contract options are exposed directly through `ns-process-data` by the inherited `dataparser_contract` field. Example:
 
 ```bash
-ns-dataparser-contract \
-  --data /path/to/processed_dataset \
-  --contract.eval-mode interval \
-  --contract.eval-interval 8 \
-  --contract.orientation-method none \
-  --contract.center-method poses \
-  --contract.auto-scale-poses
+ns-process-data images \
+  --data /path/to/raw_images \
+  --output-dir /path/to/processed_dataset \
+  --dataparser-contract.eval-mode interval \
+  --dataparser-contract.eval-interval 8 \
+  --dataparser-contract.orientation-method none \
+  --dataparser-contract.center-method poses \
+  --dataparser-contract.auto-scale-poses
 ```
 
-This is intentionally simpler than modifying every process-data converter first. Once validated, the same utility can be called automatically from `ImagesToNerfstudioDataset`, `VideoToNerfstudioDataset`, and the other converters after they write `transforms.json`.
+There is no enable/disable boolean. In this fork, serialized dataparser metadata is part of the processed dataset contract and is produced whenever `ns-process-data` successfully creates the dataset.
 
 ## Validation Plan
 

@@ -17,9 +17,11 @@ Base class to process images or video into a nerfstudio dataset
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from nerfstudio.process_data.dataparser_contract import DataparserContractConfig, serialize_dataparser_contract
 
 
 @dataclass
@@ -34,6 +36,8 @@ class BaseConverterToNerfstudioDataset(ABC):
     """Path the eval data, either a video file or a directory of images. If set to None, the first will be used both for training and eval"""
     verbose: bool = False
     """If True, print extra logging."""
+    dataparser_contract: DataparserContractConfig = field(default_factory=DataparserContractConfig)
+    """Dataparser contract options serialized after transforms.json is written."""
 
     def __post_init__(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -42,6 +46,11 @@ class BaseConverterToNerfstudioDataset(ABC):
     @property
     def image_dir(self) -> Path:
         return self.output_dir / "images"
+
+    def _save_dataparser_contract(self) -> str:
+        """Serialize the frozen dataparser contract for the processed dataset."""
+        contract_path = serialize_dataparser_contract(self.output_dir, contract=self.dataparser_contract)
+        return f"Saved dataparser contract to {contract_path}"
 
     @abstractmethod
     def main(self) -> None:

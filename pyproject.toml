@@ -136,7 +136,6 @@ docs = [
 # Note, add entrypoint name to nerfstudio/scripts/completions/install.py to include CLI completion
 ns-install-cli = "nerfstudio.scripts.completions.install:entrypoint"
 ns-process-data = "nerfstudio.scripts.process_data:entrypoint"
-ns-dataparser-contract = "nerfstudio.scripts.dataparser_contract:entrypoint"
 ns-download-data = "nerfstudio.scripts.downloads.download_data:entrypoint"
 ns-train = "nerfstudio.scripts.train:entrypoint"
 ns-viewer = "nerfstudio.scripts.viewer.run_viewer:entrypoint"

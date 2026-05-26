@@ -114,6 +114,7 @@ class ProcessRecord3D(BaseConverterToNerfstudioDataset):
             ply_dirname=self.ply_dir,
             voxel_size=self.voxel_size,
         )
+        summary_log.append(self._save_dataparser_contract())
         CONSOLE.rule("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
         for summary in summary_log:
@@ -222,6 +223,7 @@ class ProcessPolycam(BaseConverterToNerfstudioDataset):
                 crop_border_pixels=self.crop_border_pixels,
             )
         )
+        summary_log.append(self._save_dataparser_contract())
 
         CONSOLE.rule("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
@@ -322,6 +324,7 @@ class ProcessMetashape(BaseConverterToNerfstudioDataset, _NoDefaultProcessMetash
                 verbose=self.verbose,
             )
         )
+        summary_log.append(self._save_dataparser_contract())
 
         CONSOLE.rule("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
@@ -419,6 +422,7 @@ class ProcessRealityCapture(BaseConverterToNerfstudioDataset, _NoDefaultProcessR
                 verbose=self.verbose,
             )
         )
+        summary_log.append(self._save_dataparser_contract())
 
         CONSOLE.rule("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
@@ -508,6 +512,7 @@ class ProcessODM(BaseConverterToNerfstudioDataset):
                 verbose=self.verbose,
             )
         )
+        summary_log.append(self._save_dataparser_contract())
 
         CONSOLE.rule("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 

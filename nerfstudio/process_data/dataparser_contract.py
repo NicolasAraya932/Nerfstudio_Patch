@@ -18,8 +18,6 @@ from nerfstudio.utils.rich_utils import CONSOLE
 class DataparserContractConfig:
     """Small, tyro-friendly config for saving a Nerfstudio dataparser contract."""
 
-    enabled: bool = False
-    """Whether to serialize the dataparser contract after process-data finishes."""
     eval_mode: Literal["fraction", "filename", "interval", "all"] = "fraction"
     """Evaluation split rule used by the Nerfstudio dataparser."""
     train_split_fraction: float = 0.9
@@ -129,7 +127,7 @@ def serialize_dataparser_contract(
     if not (dataset_dir / "transforms.json").exists() and dataset_dir.suffix != ".json":
         raise FileNotFoundError(f"Could not find transforms.json in {dataset_dir}")
 
-    contract = contract or DataparserContractConfig(enabled=True)
+    contract = contract or DataparserContractConfig()
     output_dir = (output_dir or dataset_dir / "metadata" / "dataparser").expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 

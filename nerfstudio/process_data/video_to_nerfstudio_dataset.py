@@ -145,6 +145,7 @@ class VideoToNerfstudioDataset(ColmapConverterToNerfstudioDataset):
         summary_log += log_tmp
 
         summary_log += self._save_transforms(num_extracted_frames, image_id_to_depth_path, mask_path)
+        summary_log.append(self._save_dataparser_contract())
 
         CONSOLE.log("[bold green]:tada: :tada: :tada: All DONE :tada: :tada: :tada:")
 
