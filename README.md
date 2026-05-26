@@ -48,6 +48,194 @@
 - [Learn more](#learn-more)
 - [Supported Features](#supported-features)
 
+# Nerfstudio Patch Plan: Frozen Dataset Coordinate Contract
+
+This fork is intended to repair a reproducibility and alignment problem in the standard Nerfstudio data-processing workflow. The planned modification is to move the scene-normalization contract out of training-time dataparser side effects and into the processed dataset itself.
+
+## Problem
+
+In the normal workflow, `ns-process-data` prepares a Nerfstudio-compatible dataset, but the dataparser still computes important model-space quantities later during training. Those quantities include the scene box, dataparser transform, dataparser scale, camera normalization, and train/eval interpretation.
+
+That behavior is acceptable for a single model, but it becomes fragile when comparing or combining multiple radiance fields. If Nerfacto and an InvNeRF-style semantic model recompute normalization independently, then both models can be trained from the same images while silently living in different normalized coordinate systems. This creates downstream alignment problems for candidate-region construction, density querying, voxel comparison, and object-support evaluation.
+
+The target design is therefore:
+
+```text
+Dataset owns the coordinate contract.
+Training consumes the coordinate contract.
+Outputs store model results only.
+```
+
+## Desired Dataset Layout
+
+The processed dataset should become self-contained:
+
+```text
+Dataset/
+  images/
+  transforms.json
+
+  metadata/
+    dataset_manifest.json
+    processing_config.json
+    sfm_summary.json
+
+    dataparser/
+      dataparser_outputs.json
+      scene_box.json
+      normalization.json
+      camera_model.json
+      raw_to_model_transform.json
+      model_to_raw_transform.json
+
+    splits/
+      train_filenames.txt
+      eval_filenames.txt
+      train_indices.json
+      eval_indices.json
+```
+
+The important distinction is that `transforms.json` remains the raw camera/input description, while `metadata/dataparser/` stores the frozen Nerfstudio interpretation of that dataset.
+
+## Planned `ns-process-data` Responsibility
+
+The patched `ns-process-data` pipeline should perform the full deterministic dataset preparation chain:
+
+```text
+raw images
+-> structure from motion / pose estimation
+-> transforms.json
+-> fixed train/eval split
+-> frozen dataparser metadata
+-> fixed normalized camera/model space
+-> training-ready dataset
+```
+
+The data-processing stage should own these outputs:
+
+- Structure-from-motion output or imported calibration.
+- `transforms.json` with image paths, intrinsics, distortion, and camera-to-world matrices.
+- Scene box used by Nerfstudio.
+- Dataparser transform matrix.
+- Dataparser scale.
+- Raw/world to normalized model-space transform.
+- Normalized model-space to raw/world inverse transform.
+- Explicit train/eval split files.
+- Processing and schema metadata sufficient to reload the contract deterministically.
+
+## Training-Side Rule
+
+Training should read the frozen dataset contract instead of redefining it:
+
+```text
+ns-train nerfacto --data Dataset/
+  -> reads transforms.json
+  -> reads metadata/dataparser/*
+  -> uses fixed normalization and fixed split
+```
+
+and similarly:
+
+```text
+ns-train invnerf --data Dataset/
+  -> reads the same metadata/dataparser/*
+  -> uses the same normalized camera/model space
+```
+
+This makes Nerfacto and InvNeRF consume the same camera split, scene bounds, scale, and world-to-model transform.
+
+## Why This Matters for InvNeRF-Seg Work
+
+The downstream InvNeRF-Seg-style pipeline depends on using one coordinate space consistently:
+
+```text
+semantic support from InvNeRF
+and
+Nerfacto density/color queries
+```
+
+must refer to the same normalized model coordinates. If this contract is frozen at dataset-processing time, the semantic support exported from the mask-refined field and the base Nerfacto density/color field can be compared or combined without relying on post-hoc coordinate repair.
+
+This directly supports:
+
+- Candidate-region construction.
+- AABB generation from semantic support.
+- Local voxel-grid querying.
+- Nerfacto density/color sampling inside semantic regions.
+- Reproducible comparison across dataset variants.
+- Cleaner debugging when a model fails because normalization is no longer a hidden variable.
+
+## Serialization Schema Requirements
+
+The serialized dataparser contract should be versioned. A minimal metadata payload should include:
+
+```json
+{
+  "schema_version": 1,
+  "nerfstudio_version": "...",
+  "dataparser_class": "...",
+  "normalization_method": "...",
+  "dataparser_transform": [[...], [...], [...], [...]],
+  "dataparser_scale": 1.0,
+  "scene_box": {
+    "aabb": [[...], [...]]
+  },
+  "raw_to_model_transform": [[...], [...], [...], [...]],
+  "model_to_raw_transform": [[...], [...], [...], [...]],
+  "train_filenames": [...],
+  "eval_filenames": [...]
+}
+```
+
+The schema should be treated as a coordinate contract. Any code path that changes normalization should either update the schema version or refuse to reuse incompatible metadata.
+
+## Proposed Implementation Strategy
+
+The first implementation should be optional and conservative:
+
+```text
+ns-process-data images \
+  --save-dataparser-contract \
+  --fixed-train-eval-split
+```
+
+Training should then support an explicit loading mode:
+
+```text
+ns-train nerfacto \
+  --data Dataset/ \
+  --load-dataparser-contract
+```
+
+Initial behavior should not remove the default Nerfstudio path. The patch should add a deterministic mode first, validate it, and only later decide whether it becomes the preferred default for this fork.
+
+## Validation Plan
+
+The validation should check that the serialized contract is actually invariant:
+
+1. Run `ns-process-data` once and save the dataparser contract.
+2. Train Nerfacto using the frozen contract.
+3. Train InvNeRF-style semantic refinement using the same frozen contract.
+4. Verify both models report the same scene box, dataparser transform, scale, and train/eval split.
+5. Export semantic support and query Nerfacto density/color in the same coordinates.
+6. Confirm that no post-hoc camera-pose or ICP repair is needed for same-dataset InvNeRF-to-Nerfacto alignment.
+
+## Artifact Boundary
+
+Training artifacts must not be committed to this repository. The repository ignores generated training data and model weights:
+
+```text
+outputs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+nerfstudio_models/
+```
+
+The patch should contain source code, documentation, and lightweight metadata examples only. Checkpoints and run outputs belong outside git or in a dedicated artifact store.
+
 # About
 
 _It’s as simple as plug and play with nerfstudio!_
