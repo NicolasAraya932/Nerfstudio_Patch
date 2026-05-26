@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Nerfstudio training outputs and large model artifacts
+outputs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+nerfstudio_models/
