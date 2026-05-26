@@ -368,6 +368,44 @@ The preferred implementation order is therefore:
 3. Validate invariant scene box, transform, scale, and split across Nerfacto and InvNeRF-style training.
 4. Only then consider exposing the full `AnnotatedDataParserUnion` in `ns-process-data`.
 
+### Minimal CLI Implemented First
+
+The first working step is a separate Tyro command that can be run immediately after `ns-process-data` finishes:
+
+```bash
+ns-dataparser-contract \
+  --data /path/to/processed_dataset
+```
+
+Equivalent module invocation:
+
+```bash
+python -m nerfstudio.scripts.dataparser_contract \
+  --data /path/to/processed_dataset
+```
+
+The command writes:
+
+```text
+/path/to/processed_dataset/metadata/dataparser/contract.json
+/path/to/processed_dataset/metadata/dataparser/scene_box.json
+/path/to/processed_dataset/metadata/dataparser/splits.json
+```
+
+The command exposes the small `DataparserContractConfig` through Tyro, for example:
+
+```bash
+ns-dataparser-contract \
+  --data /path/to/processed_dataset \
+  --contract.eval-mode interval \
+  --contract.eval-interval 8 \
+  --contract.orientation-method none \
+  --contract.center-method poses \
+  --contract.auto-scale-poses
+```
+
+This is intentionally simpler than modifying every process-data converter first. Once validated, the same utility can be called automatically from `ImagesToNerfstudioDataset`, `VideoToNerfstudioDataset`, and the other converters after they write `transforms.json`.
+
 ## Validation Plan
 
 The validation should check that the serialized contract is actually invariant:
