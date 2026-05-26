@@ -209,6 +209,73 @@ ns-train nerfacto \
 
 Initial behavior should not remove the default Nerfstudio path. The patch should add a deterministic mode first, validate it, and only later decide whether it becomes the preferred default for this fork.
 
+### Process-Data Serializer Design
+
+The first implementation should call the existing dataparser after the normal `ns-process-data` conversion has completed. In other words, the patch should not duplicate the scene-normalization math inside the process-data converter. It should reuse the same dataparser code path that training would otherwise use.
+
+The intended call chain is:
+
+```text
+nerfstudio/scripts/process_data.py
+  -> calls the selected process-data converter
+
+nerfstudio/process_data/*
+  -> creates images/, transforms.json, masks, COLMAP/GLOMAP outputs, etc.
+
+optional frozen-contract stage
+  -> instantiates the selected dataparser
+  -> reads the completed dataset
+  -> obtains train/eval DataparserOutputs
+  -> serializes the coordinate contract into metadata/dataparser/
+```
+
+This stage should run only after `transforms.json` and the processed dataset assets exist. It should not call training code.
+
+The preferred utility location is:
+
+```text
+nerfstudio/process_data/dataparser_contract.py
+```
+
+This keeps the serializer close to dataset creation while avoiding file-writing side effects inside the dataparser itself. The dataparser remains responsible for computing the scene interpretation; the process-data serializer is responsible for persisting that interpretation.
+
+A minimal serializer API could be:
+
+```python
+def serialize_dataparser_contract(
+    data: Path,
+    output_dir: Path | None = None,
+    dataparser_config: DataParserConfig | None = None,
+    split_policy: str = "existing",
+) -> Path:
+    ...
+```
+
+The minimal implementation can instantiate the intended Nerfstudio dataparser, obtain outputs for `train` and `eval`, and write:
+
+```text
+metadata/dataparser/contract.json
+metadata/dataparser/scene_box.json
+metadata/dataparser/cameras_train.json
+metadata/dataparser/cameras_eval.json
+metadata/dataparser/splits.json
+```
+
+Using private dataparser methods such as `_generate_dataparser_outputs(split="train")` is acceptable for the first patch if needed, but the cleaner long-term API is a public method such as:
+
+```python
+get_dataparser_outputs(split: Literal["train", "eval"])
+```
+
+The dependency direction should remain one-way:
+
+```text
+process_data may import dataparsers
+dataparsers should not import process_data
+```
+
+That avoids circular dependencies and preserves the conceptual split: process-data builds and freezes the dataset contract; training loads and consumes it.
+
 ## Validation Plan
 
 The validation should check that the serialized contract is actually invariant:
