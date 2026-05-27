@@ -463,6 +463,316 @@ This layer does not normalize, threshold, rescale, or rewrite auxiliary image fi
 
 When a modality is missing for a frame, the metadata list preserves a `null` entry instead of dropping or reindexing frames. This keeps RGB cameras, splits, and auxiliary paths aligned while making incomplete modality coverage explicit.
 
+### Current Validated Cherrytree Workflow
+
+The current end-to-end validation dataset is:
+
+```text
+/workspace/Desktop/DATASETS/IMAGES/cherrytree
+```
+
+It contains both full-resolution and 2x downscaled aligned modalities:
+
+```text
+images/          337 RGB images
+binary_imgs/     337 binary masks
+images_2/        337 RGB images at 2x downscale
+binary_imgs_2/   337 binary masks at 2x downscale
+```
+
+The active frozen contract is configured with `downscale_factor=2`, so training loads:
+
+```text
+images_2/
+binary_imgs_2/
+```
+
+The current contract resolves to:
+
+```text
+train: 294 RGB frames + 294 binary_img entries, 0 nulls
+test:   43 RGB frames +  43 binary_img entries, 0 nulls
+```
+
+One missing binary mask was repaired manually with the fruit segmentation model:
+
+```text
+/workspace/Desktop/DATASETS/IMAGES/cherrytree/images/frame_00314.JPG
+-> /workspace/Desktop/DATASETS/IMAGES/cherrytree/binary_imgs/frame_00314.png
+```
+
+After generating that mask, the contract was refreshed and no `null` auxiliary image entries remain.
+
+### Smoke-Test Commands
+
+Check the active contract:
+
+```bash
+cd /workspace/Desktop/Repos/Nerfstudio_Patch
+
+python - <<'PY'
+import json
+from pathlib import Path
+
+root = Path("/workspace/Desktop/DATASETS/IMAGES/cherrytree")
+c = json.loads((root / "metadata/dataparser/contract.json").read_text())
+print("downscale:", c["contract_config"]["downscale_factor"])
+for split in ("train", "test"):
+    imgs = c["splits"][split]["image_filenames"]
+    bins = c["splits"][split]["metadata"]["image_modalities"]["binary_img"]
+    print(split, len(imgs), len(bins), "nulls:", sum(x is None for x in bins))
+    print("  first rgb:", imgs[0])
+    print("  first binary:", bins[0])
+PY
+```
+
+Nerfacto smoke test:
+
+```bash
+cd /workspace/Desktop/Repos/Nerfstudio_Patch
+rm -rf /tmp/ns_cherrytree_nerfacto_ds2_smoke
+
+PYTHONPATH=. ns-train nerfacto \
+  --data /workspace/Desktop/DATASETS/IMAGES/cherrytree \
+  --output-dir /tmp/ns_cherrytree_nerfacto_ds2_smoke \
+  --experiment-name cherrytree_nerfacto_ds2_smoke \
+  --timestamp smoke \
+  --vis tensorboard \
+  --max-num-iterations 1 \
+  --steps-per-save 1000000 \
+  --steps-per-eval-batch 1000000 \
+  --steps-per-eval-image 1000000 \
+  --steps-per-eval-all-images 1000000 \
+  --mixed-precision False \
+  --machine.device-type cpu \
+  --pipeline.model.implementation torch \
+  --pipeline.datamanager.load-from-disk True \
+  nerfstudio-data
+```
+
+InvNeRF smoke test must explicitly match the frozen split/downscale until the InvNeRF dataparser is patched to consume the frozen contract directly:
+
+```bash
+cd /workspace/Desktop/Repos/Nerfstudio_Patch
+rm -rf /tmp/ns_cherrytree_invnerf_ds2_smoke
+
+PYTHONPATH=. ns-train inv-nerf \
+  --data /workspace/Desktop/DATASETS/IMAGES/cherrytree \
+  --output-dir /tmp/ns_cherrytree_invnerf_ds2_smoke \
+  --experiment-name cherrytree_invnerf_ds2_smoke \
+  --timestamp smoke \
+  --vis tensorboard \
+  --max-num-iterations 1 \
+  --steps-per-save 1000000 \
+  --steps-per-eval-batch 1000000 \
+  --steps-per-eval-image 1000000 \
+  --steps-per-eval-all-images 1000000 \
+  --mixed-precision False \
+  --machine.device-type cpu \
+  --pipeline.datamanager.dataparser.eval-mode interval \
+  --pipeline.datamanager.dataparser.eval-interval 8 \
+  --pipeline.datamanager.dataparser.orientation-method none \
+  --pipeline.datamanager.dataparser.center-method poses \
+  --pipeline.datamanager.dataparser.downscale-factor 2
+```
+
+Expected InvNeRF split when configured correctly:
+
+```text
+Caching all 294 images.
+Setting up evaluation dataset...
+Caching all 43 images.
+```
+
+### Training and Export Notes
+
+Nerfacto pointcloud export must use Open3D normals unless the model was trained with predicted normals:
+
+```bash
+ns-export pointcloud \
+  --load-config /workspace/Desktop/Repos/CHERRYTREE_TRAINING_TEST/nerfacto/cherrytree_nerfacto_ds2/nerfacto/run_000/config.yml \
+  --output-dir /workspace/Desktop/Repos/CHERRYTREE_TRAINING_TEST/exports/nerfacto_pointcloud \
+  --num-points 1000000 \
+  --remove-outliers True \
+  --normal-method open3d
+```
+
+Do not use a full Nerfacto checkpoint as a direct InvNeRF checkpoint with `--load-checkpoint` unless the model architectures and train-camera counts match exactly. The observed mismatch was:
+
+```text
+Nerfacto checkpoint: 294 appearance embeddings, 128 dims
+InvNeRF model:       304 appearance embeddings, 32 dims
+```
+
+The correct next implementation is either:
+
+1. patch InvNeRF to consume the frozen contract directly; and
+2. implement partial-compatible Nerfacto-to-InvNeRF initialization instead of loading the full checkpoint state dict.
+
+Generic `ns-export pointcloud` is not compatible with the custom InvNeRF datamanager. InvNeRF semantic exports should use InvNeRF-specific sampling/export code.
+
+### Only Sampling the InvNeRF Semantic Cloud
+
+For the semantic cloud only, avoid the full `ns-export-inv-nerf` wrapper because it continues into filtering, clusters, bboxes, and optional Nerfacto resampling. The minimal sampling path is:
+
+```text
+config_initialization_THREAD(...)
+-> pipeline.datamanager.next_train(...)
+-> pipeline.model(ray_bundle)
+-> choose a 3D point per ray from model outputs
+-> write semantic point cloud
+```
+
+The original helper used rendered `depth`:
+
+```python
+point = ray_bundle.origins + ray_bundle.directions * depth
+```
+
+On the current cherrytree InvNeRF run this collapsed the PLY close to camera origins. Validation showed nearest camera-origin distances around `2e-4`, so the saved PLY contained computed points, but those points were practically camera origins because the rendered depth signal was near zero.
+
+The repaired direct sampler uses density peaks and `t_mid` instead:
+
+```python
+sigma = outputs["density"].reshape(num_rays, -1)
+t_mid = outputs["t_mid"].reshape(num_rays, -1)
+peak_idx = sigma.argmax(dim=1)
+t_peak = t_mid[torch.arange(sigma.shape[0]), peak_idx]
+points = ray_bundle.origins + ray_bundle.directions * t_peak[:, None]
+```
+
+Minimal direct script:
+
+```bash
+cd /workspace/Desktop/Repos/Nerfstudio_Patch
+
+PYTHONPATH=/workspace/Desktop/Repos/Nerfstudio_Patch:/workspace/Desktop/Repos/InvNeRF-Seg python - <<'PY'
+from pathlib import Path
+
+import open3d as o3d
+import torch
+from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
+
+from InvNeRF.config.config_utils import config_initialization_THREAD
+from nerfstudio.cameras.rays import RayBundle
+from nerfstudio.utils.rich_utils import CONSOLE
+
+CONFIG = Path("/workspace/Desktop/Repos/CHERRYTREE_TRAINING_TEST/invnerf/cherrytree_invnerf_ds2_no_preload/inv-nerf/run_000/config.yml")
+OUT_DIR = Path("/workspace/Desktop/Repos/CHERRYTREE_TRAINING_TEST/exports/invnerf_semantic_sample_only_repaired")
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+NUM_RAYS_PER_BATCH = 4096
+NUM_POINTS = 1_000_000
+ACC_THRESHOLD = 0.1
+DENSITY_THRESHOLD = 0.0
+MAX_BATCHES = 5000
+
+_, pipeline, checkpoint_path, step = config_initialization_THREAD(CONFIG, num_rays_per_batch=NUM_RAYS_PER_BATCH)
+
+points_all = []
+density_all = []
+accumulation_all = []
+t_all = []
+
+def flatten_samples(x: torch.Tensor) -> torch.Tensor:
+    x = torch.nan_to_num(x)
+    if x.dim() == 1:
+        return x[:, None]
+    if x.dim() == 2:
+        return x
+    return x.reshape(x.shape[0], -1)
+
+with Progress(
+    TextColumn(":cloud: Sampling semantic cloud from density peaks"),
+    BarColumn(),
+    TaskProgressColumn(show_speed=True),
+    TimeRemainingColumn(elapsed_when_finished=True, compact=True),
+    console=CONSOLE,
+) as progress:
+    task = progress.add_task("semantic samples", total=NUM_POINTS)
+    for _ in range(MAX_BATCHES):
+        if sum(x.shape[0] for x in points_all) >= NUM_POINTS:
+            break
+        with torch.no_grad():
+            ray_bundle, _ = pipeline.datamanager.next_train(0)
+            assert isinstance(ray_bundle, RayBundle)
+            outputs = pipeline.model(ray_bundle)
+
+        sigma = flatten_samples(outputs["density"])
+        t_mid = flatten_samples(outputs["t_mid"])
+        n = min(sigma.shape[0], t_mid.shape[0])
+        s = min(sigma.shape[1], t_mid.shape[1])
+        sigma = sigma[:n, :s]
+        t_mid = t_mid[:n, :s]
+
+        peak_idx = sigma.argmax(dim=1)
+        ray_ids = torch.arange(sigma.shape[0], device=sigma.device)
+        sigma_peak = sigma[ray_ids, peak_idx]
+        t_peak = t_mid[ray_ids, peak_idx]
+
+        if "accumulation" in outputs:
+            acc = flatten_samples(outputs["accumulation"]).max(dim=1).values[: sigma_peak.shape[0]]
+        else:
+            acc = torch.ones_like(sigma_peak)
+
+        valid = (acc > ACC_THRESHOLD) & (sigma_peak > DENSITY_THRESHOLD) & torch.isfinite(t_peak)
+        origins = ray_bundle.origins[: sigma_peak.shape[0]]
+        directions = ray_bundle.directions[: sigma_peak.shape[0]]
+        points = origins + directions * t_peak[:, None]
+
+        points = points[valid]
+        sigma_peak = sigma_peak[valid]
+        acc = acc[valid]
+        t_peak = t_peak[valid]
+        if points.numel() == 0:
+            continue
+
+        points_cpu = points.detach().cpu()
+        points_all.append(points_cpu)
+        density_all.append(sigma_peak.detach().cpu())
+        accumulation_all.append(acc.detach().cpu())
+        t_all.append(t_peak.detach().cpu())
+        progress.advance(task, points_cpu.shape[0])
+
+points = torch.cat(points_all, dim=0)[:NUM_POINTS] if points_all else torch.empty((0, 3))
+density = torch.cat(density_all, dim=0)[:NUM_POINTS] if density_all else torch.empty((0,))
+accumulation = torch.cat(accumulation_all, dim=0)[:NUM_POINTS] if accumulation_all else torch.empty((0,))
+t_peak = torch.cat(t_all, dim=0)[:NUM_POINTS] if t_all else torch.empty((0,))
+
+pcd = o3d.geometry.PointCloud()
+pcd.points = o3d.utility.Vector3dVector(points.double().numpy())
+
+ply_path = OUT_DIR / "semantic_cloud_density_peak.ply"
+pt_path = OUT_DIR / "semantic_cloud_density_peak.pt"
+o3d.io.write_point_cloud(str(ply_path), pcd)
+torch.save(
+    {
+        "config_path": str(CONFIG),
+        "checkpoint_path": str(checkpoint_path),
+        "step": int(step),
+        "sampling_method": "origin_plus_direction_times_t_mid_at_peak_density",
+        "acc_threshold": ACC_THRESHOLD,
+        "density_threshold": DENSITY_THRESHOLD,
+        "points": points,
+        "density": density,
+        "accumulation": accumulation,
+        "t_peak": t_peak,
+    },
+    pt_path,
+)
+print("Wrote:", ply_path)
+print("Wrote:", pt_path)
+print("points:", points.shape[0])
+PY
+```
+
+Outputs:
+
+```text
+/workspace/Desktop/Repos/CHERRYTREE_TRAINING_TEST/exports/invnerf_semantic_sample_only_repaired/semantic_cloud_density_peak.ply
+/workspace/Desktop/Repos/CHERRYTREE_TRAINING_TEST/exports/invnerf_semantic_sample_only_repaired/semantic_cloud_density_peak.pt
+```
+
 ## Validation Plan
 
 The validation should check that the serialized contract is actually invariant:
