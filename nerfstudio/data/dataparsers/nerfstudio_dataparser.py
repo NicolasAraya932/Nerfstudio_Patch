@@ -16,7 +16,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional, Tuple, Type
+from typing import Literal, Optional, Tuple, Type
 
 import numpy as np
 import torch
@@ -24,7 +24,11 @@ from PIL import Image
 
 from nerfstudio.cameras import camera_utils
 from nerfstudio.cameras.cameras import CAMERA_MODEL_TO_TYPE, Cameras, CameraType
-from nerfstudio.data.dataparsers.base_dataparser import DataParser, DataParserConfig, DataparserOutputs
+from nerfstudio.data.dataparsers.base_dataparser import DataParser, DataParserConfig
+from nerfstudio.data.dataparsers.dataparser_contract_reader import (
+    get_dataparser_contract_path,
+    load_dataparser_outputs_from_contract,
+)
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.data.utils.dataparsers_utils import (
     get_train_eval_split_all,
@@ -87,92 +91,13 @@ class Nerfstudio(DataParser):
     config: NerfstudioDataParserConfig
     downscale_factor: Optional[int] = None
 
-    def _get_dataparser_contract_path(self) -> Optional[Path]:
-        """Return the frozen process-data contract path when it exists."""
-        if not self.config.load_frozen_contract:
-            return None
-        if self.config.data.suffix == ".json":
-            dataset_dir = self.config.data.parent
-        else:
-            dataset_dir = self.config.data
-        contract_path = dataset_dir / "metadata" / "dataparser" / "contract.json"
-        return contract_path if contract_path.exists() else None
-
-    def _resolve_contract_paths(
-        self, paths: Optional[list[Optional[str]]], dataset_dir: Path
-    ) -> Optional[list[Optional[Path]]]:
-        """Resolve contract-relative paths into dataset-local paths while preserving missing optional paths."""
-        if paths is None:
-            return None
-        return [None if path is None else dataset_dir / path for path in paths]
-
-    def _restore_contract_metadata(self, metadata: dict[str, Any], dataset_dir: Path) -> dict[str, Any]:
-        """Restore metadata values that need Path objects after JSON serialization."""
-        restored = dict(metadata)
-        depth_filenames = restored.get("depth_filenames")
-        if depth_filenames is not None:
-            restored["depth_filenames"] = self._resolve_contract_paths(depth_filenames, dataset_dir)
-        image_modalities = restored.get("image_modalities")
-        if isinstance(image_modalities, dict):
-            restored["image_modalities"] = {
-                str(key): self._resolve_contract_paths(paths, dataset_dir)
-                for key, paths in image_modalities.items()
-            }
-        return restored
-
-    def _tensor_from_contract(self, value: Any, dtype: torch.dtype) -> Optional[torch.Tensor]:
-        """Convert a serialized contract value into a tensor."""
-        if value is None:
-            return None
-        return torch.tensor(value, dtype=dtype)
-
-    def _generate_dataparser_outputs_from_contract(self, split: str, contract_path: Path) -> DataparserOutputs:
-        """Load frozen dataparser outputs saved by ns-process-data."""
-        payload = load_from_json(contract_path)
-        if int(payload.get("schema_version", 0)) != 1:
-            raise RuntimeError(f"Unsupported dataparser contract schema in {contract_path}")
-
-        split_key = "test" if split == "val" else split
-        if split_key not in payload["splits"]:
-            raise ValueError(f"Unknown dataparser contract split {split}")
-
-        dataset_dir = Path(payload["dataset_dir"])
-        split_payload = payload["splits"][split_key]
-        cameras_payload = split_payload["cameras"]
-        shared_payload = payload["shared"]
-
-        cameras = Cameras(
-            fx=self._tensor_from_contract(cameras_payload["fx"], torch.float32),
-            fy=self._tensor_from_contract(cameras_payload["fy"], torch.float32),
-            cx=self._tensor_from_contract(cameras_payload["cx"], torch.float32),
-            cy=self._tensor_from_contract(cameras_payload["cy"], torch.float32),
-            distortion_params=self._tensor_from_contract(cameras_payload["distortion_params"], torch.float32),
-            height=self._tensor_from_contract(cameras_payload["height"], torch.int32),
-            width=self._tensor_from_contract(cameras_payload["width"], torch.int32),
-            camera_to_worlds=self._tensor_from_contract(cameras_payload["camera_to_worlds"], torch.float32),
-            camera_type=self._tensor_from_contract(cameras_payload["camera_type"], torch.int64),
-            times=self._tensor_from_contract(cameras_payload.get("times"), torch.float32),
-            metadata=cameras_payload.get("metadata", {}),
-        )
-
-        dataparser_outputs = DataparserOutputs(
-            image_filenames=self._resolve_contract_paths(split_payload["image_filenames"], dataset_dir) or [],
-            cameras=cameras,
-            scene_box=SceneBox(aabb=torch.tensor(shared_payload["scene_box"]["aabb"], dtype=torch.float32)),
-            mask_filenames=self._resolve_contract_paths(split_payload["mask_filenames"], dataset_dir),
-            dataparser_scale=float(shared_payload["dataparser_scale"]),
-            dataparser_transform=torch.tensor(shared_payload["dataparser_transform"], dtype=torch.float32),
-            metadata=self._restore_contract_metadata(split_payload.get("metadata", {}), dataset_dir),
-        )
-        CONSOLE.log(f"[green]Loaded frozen dataparser contract from {contract_path} ({split_key} split)")
-        return dataparser_outputs
-
     def _generate_dataparser_outputs(self, split="train"):
         assert self.config.data.exists(), f"Data directory {self.config.data} does not exist."
 
-        contract_path = self._get_dataparser_contract_path()
-        if contract_path is not None:
-            return self._generate_dataparser_outputs_from_contract(split, contract_path)
+        if self.config.load_frozen_contract:
+            contract_path = get_dataparser_contract_path(self.config.data)
+            if contract_path is not None:
+                return load_dataparser_outputs_from_contract(contract_path, split)
 
         if self.config.data.suffix == ".json":
             meta = load_from_json(self.config.data)

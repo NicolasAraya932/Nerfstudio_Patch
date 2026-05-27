@@ -418,7 +418,9 @@ There is no enable/disable boolean. In this fork, serialized dataparser metadata
 metadata/dataparser/contract.json
 ```
 
-the `Nerfstudio` dataparser loads the serialized train/test `DataparserOutputs` from that file instead of recomputing camera normalization, scene scale, scene box, or train/eval splits from `transforms.json`. If the contract is absent, the normal Nerfstudio dataparser path remains available as a fallback for legacy datasets.
+the dataparser uses the shared reader in `nerfstudio/data/dataparsers/dataparser_contract_reader.py` to load serialized train/test `DataparserOutputs` from that file instead of recomputing camera normalization, scene scale, scene box, or train/eval splits from `transforms.json`. If the contract is absent, the normal dataparser path remains available as a fallback for legacy datasets.
+
+Both Nerfstudio-format datasets and InvNeRF-style datasets should consume this reader at the dataparser layer. Datamanagers remain unchanged: they keep calling `get_dataparser_outputs(split)` and do not need to know whether outputs came from the frozen contract or from `transforms.json`.
 
 This makes the processed dataset the authority for the normalized model space:
 
@@ -550,13 +552,13 @@ PYTHONPATH=. ns-train nerfacto \
   nerfstudio-data
 ```
 
-InvNeRF smoke test must explicitly match the frozen split/downscale until the InvNeRF dataparser is patched to consume the frozen contract directly:
+InvNeRF smoke test now reads the same frozen contract directly, so no manual split, orientation, or downscale flags are needed:
 
 ```bash
 cd /workspace/Desktop/Repos/Nerfstudio_Patch
 rm -rf /tmp/ns_cherrytree_invnerf_ds2_smoke
 
-PYTHONPATH=. ns-train inv-nerf \
+PYTHONPATH=/workspace/Desktop/Repos/Nerfstudio_Patch:/workspace/Desktop/Repos/InvNeRF-Seg ns-train inv-nerf \
   --data /workspace/Desktop/DATASETS/IMAGES/cherrytree \
   --output-dir /tmp/ns_cherrytree_invnerf_ds2_smoke \
   --experiment-name cherrytree_invnerf_ds2_smoke \
@@ -569,11 +571,7 @@ PYTHONPATH=. ns-train inv-nerf \
   --steps-per-eval-all-images 1000000 \
   --mixed-precision False \
   --machine.device-type cpu \
-  --pipeline.datamanager.dataparser.eval-mode interval \
-  --pipeline.datamanager.dataparser.eval-interval 8 \
-  --pipeline.datamanager.dataparser.orientation-method none \
-  --pipeline.datamanager.dataparser.center-method poses \
-  --pipeline.datamanager.dataparser.downscale-factor 2
+  --pipeline.model.implementation torch
 ```
 
 Expected InvNeRF split when configured correctly:
