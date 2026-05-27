@@ -149,17 +149,9 @@ def run_colmap(
     with status(msg="[bold yellow]Running COLMAP feature matcher...", spinner="runner", verbose=verbose):
         run_command(feature_matcher_cmd, verbose=verbose)
 
-    # Exhaustive matching
-    exhaustive_matcher_cmd = [
-        f"{colmap_cmd} exhaustive_matcher",
-        f"--database_path {colmap_dir / 'database.db'}",
-    ]
-    exhaustive_matcher_cmd = " ".join(exhaustive_matcher_cmd)
-    with status(msg="[bold yellow]Running COLMAP exhaustive matcher...", spinner="runner", verbose=verbose):
-        run_command(exhaustive_matcher_cmd, verbose=verbose)
     CONSOLE.log("[bold green]:tada: Done matching COLMAP features.")
 
-    # GLOMAP Bundle adjustment
+    # GLOMAP reconstructs the sparse model from the COLMAP feature database.
     sparse_dir = colmap_dir / "sparse"
     sparse_dir.mkdir(parents=True, exist_ok=True)
     mapper_cmd = [
