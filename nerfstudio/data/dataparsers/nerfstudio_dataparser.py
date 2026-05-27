@@ -76,6 +76,8 @@ class NerfstudioDataParserConfig(DataParserConfig):
     """Replace the unknown pixels with this color. Relevant if you have a mask but still sample everywhere."""
     load_3D_points: bool = False
     """Whether to load the 3D points from the colmap reconstruction."""
+    load_frozen_contract: bool = True
+    """Whether to load metadata/dataparser/contract.json when present."""
 
 
 @dataclass
@@ -87,6 +89,8 @@ class Nerfstudio(DataParser):
 
     def _get_dataparser_contract_path(self) -> Optional[Path]:
         """Return the frozen process-data contract path when it exists."""
+        if not self.config.load_frozen_contract:
+            return None
         if self.config.data.suffix == ".json":
             dataset_dir = self.config.data.parent
         else:
@@ -94,11 +98,13 @@ class Nerfstudio(DataParser):
         contract_path = dataset_dir / "metadata" / "dataparser" / "contract.json"
         return contract_path if contract_path.exists() else None
 
-    def _resolve_contract_paths(self, paths: Optional[list[str]], dataset_dir: Path) -> Optional[list[Path]]:
-        """Resolve contract-relative paths into dataset-local paths."""
+    def _resolve_contract_paths(
+        self, paths: Optional[list[Optional[str]]], dataset_dir: Path
+    ) -> Optional[list[Optional[Path]]]:
+        """Resolve contract-relative paths into dataset-local paths while preserving missing optional paths."""
         if paths is None:
             return None
-        return [dataset_dir / path for path in paths]
+        return [None if path is None else dataset_dir / path for path in paths]
 
     def _restore_contract_metadata(self, metadata: dict[str, Any], dataset_dir: Path) -> dict[str, Any]:
         """Restore metadata values that need Path objects after JSON serialization."""
@@ -106,6 +112,12 @@ class Nerfstudio(DataParser):
         depth_filenames = restored.get("depth_filenames")
         if depth_filenames is not None:
             restored["depth_filenames"] = self._resolve_contract_paths(depth_filenames, dataset_dir)
+        image_modalities = restored.get("image_modalities")
+        if isinstance(image_modalities, dict):
+            restored["image_modalities"] = {
+                str(key): self._resolve_contract_paths(paths, dataset_dir)
+                for key, paths in image_modalities.items()
+            }
         return restored
 
     def _tensor_from_contract(self, value: Any, dtype: torch.dtype) -> Optional[torch.Tensor]:
@@ -172,6 +184,7 @@ class Nerfstudio(DataParser):
         image_filenames = []
         mask_filenames = []
         depth_filenames = []
+        auxiliary_image_filenames: dict[str, list[Optional[Path]]] = {}
         poses = []
 
         fx_fixed = "fl_x" in meta
@@ -202,6 +215,10 @@ class Nerfstudio(DataParser):
             fnames.append(fname)
         inds = np.argsort(fnames)
         frames = [meta["frames"][ind] for ind in inds]
+        auxiliary_image_keys = sorted(
+            {key for frame in frames for key in frame if key.endswith("_img") and key != "file_path"}
+        )
+        auxiliary_image_filenames = {key: [] for key in auxiliary_image_keys}
 
         for frame in frames:
             filepath = Path(frame["file_path"])
@@ -254,6 +271,18 @@ class Nerfstudio(DataParser):
                 depth_filepath = Path(frame["depth_file_path"])
                 depth_fname = self._get_fname(depth_filepath, data_dir, downsample_folder_prefix="depths_")
                 depth_filenames.append(depth_fname)
+
+            for key in auxiliary_image_keys:
+                aux_path = frame.get(key)
+                if aux_path is None:
+                    auxiliary_image_filenames[key].append(None)
+                    continue
+                aux_filepath = Path(aux_path)
+                aux_parent = aux_filepath.parent.name
+                downsample_prefix = f"{aux_parent}_" if aux_parent else f"{key}s_"
+                auxiliary_image_filenames[key].append(
+                    self._get_fname(aux_filepath, data_dir, downsample_folder_prefix=downsample_prefix)
+                )
 
         assert len(mask_filenames) == 0 or (len(mask_filenames) == len(image_filenames)), """
         Different number of image and mask filenames.
@@ -327,6 +356,18 @@ class Nerfstudio(DataParser):
         image_filenames = [image_filenames[i] for i in indices]
         mask_filenames = [mask_filenames[i] for i in indices] if len(mask_filenames) > 0 else []
         depth_filenames = [depth_filenames[i] for i in indices] if len(depth_filenames) > 0 else []
+        auxiliary_image_filenames = {
+            key: [paths[i] for i in indices]
+            for key, paths in auxiliary_image_filenames.items()
+            if any(path is not None for path in paths)
+        }
+        for key, paths in auxiliary_image_filenames.items():
+            missing_count = sum(path is None for path in paths)
+            if missing_count > 0:
+                CONSOLE.log(
+                    "[yellow]Auxiliary image modality "
+                    f"{key!r} is missing for {missing_count}/{len(paths)} {split} frames."
+                )
 
         idx_tensor = torch.tensor(indices, dtype=torch.long)
         poses = poses[idx_tensor]
@@ -478,6 +519,15 @@ class Nerfstudio(DataParser):
                     metadata.update(sparse_points)
             self.prompted_user = True
 
+        output_metadata = {
+            "depth_filenames": depth_filenames if len(depth_filenames) > 0 else None,
+            "depth_unit_scale_factor": self.config.depth_unit_scale_factor,
+            "mask_color": self.config.mask_color,
+            **metadata,
+        }
+        if auxiliary_image_filenames:
+            output_metadata["image_modalities"] = auxiliary_image_filenames
+
         dataparser_outputs = DataparserOutputs(
             image_filenames=image_filenames,
             cameras=cameras,
@@ -485,12 +535,7 @@ class Nerfstudio(DataParser):
             mask_filenames=mask_filenames if len(mask_filenames) > 0 else None,
             dataparser_scale=scale_factor,
             dataparser_transform=dataparser_transform_matrix,
-            metadata={
-                "depth_filenames": depth_filenames if len(depth_filenames) > 0 else None,
-                "depth_unit_scale_factor": self.config.depth_unit_scale_factor,
-                "mask_color": self.config.mask_color,
-                **metadata,
-            },
+            metadata=output_metadata,
         )
         return dataparser_outputs
 

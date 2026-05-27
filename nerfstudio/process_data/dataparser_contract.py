@@ -55,16 +55,31 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def _relative_paths(paths: Optional[list[Path]], root: Path) -> Optional[list[str]]:
+def _relative_paths(paths: Optional[list[Optional[Path]]], root: Path) -> Optional[list[Optional[str]]]:
     if paths is None:
         return None
-    result: list[str] = []
+    result: list[Optional[str]] = []
     for path in paths:
+        if path is None:
+            result.append(None)
+            continue
         try:
             result.append(path.relative_to(root).as_posix())
         except ValueError:
             result.append(path.as_posix())
     return result
+
+
+def _metadata_payload(outputs: DataparserOutputs, dataset_dir: Path) -> Dict[str, Any]:
+    """Serialize metadata while keeping auxiliary image modality paths dataset-relative."""
+    metadata = dict(outputs.metadata)
+    image_modalities = metadata.get("image_modalities")
+    if isinstance(image_modalities, dict):
+        metadata["image_modalities"] = {
+            str(key): _relative_paths(paths, dataset_dir)
+            for key, paths in image_modalities.items()
+        }
+    return _jsonable(metadata)
 
 
 def _camera_payload(outputs: DataparserOutputs) -> Dict[str, Any]:
@@ -88,7 +103,7 @@ def _split_payload(outputs: DataparserOutputs, dataset_dir: Path) -> Dict[str, A
     return {
         "image_filenames": _relative_paths(outputs.image_filenames, dataset_dir),
         "mask_filenames": _relative_paths(outputs.mask_filenames, dataset_dir),
-        "metadata": _jsonable(outputs.metadata),
+        "metadata": _metadata_payload(outputs, dataset_dir),
         "cameras": _camera_payload(outputs),
     }
 
@@ -105,6 +120,7 @@ def _build_nerfstudio_dataparser_config(dataset_dir: Path, contract: DataparserC
         eval_mode=contract.eval_mode,
         train_split_fraction=contract.train_split_fraction,
         eval_interval=contract.eval_interval,
+        load_frozen_contract=False,
     )
 
 

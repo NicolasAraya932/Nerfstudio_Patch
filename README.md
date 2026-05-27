@@ -432,6 +432,37 @@ ns-train
   -> uses the same cameras, scene box, transform, scale, and splits
 ```
 
+### Multi-Image Modality Contract
+
+The dataparser contract also preserves aligned image modalities without interpreting their pixel values. The canonical RGB path remains `file_path`. Any additional frame key ending in `_img` is treated as an optional auxiliary modality and stored as paths under `DataparserOutputs.metadata["image_modalities"]`. Examples include:
+
+```text
+binary_img
+semantic_img
+depth_img
+instance_img
+```
+
+The serialized contract keeps those modality paths split-aligned with the RGB images:
+
+```json
+{
+  "splits": {
+    "train": {
+      "metadata": {
+        "image_modalities": {
+          "binary_img": ["binary_imgs/frame_00001.png"]
+        }
+      }
+    }
+  }
+}
+```
+
+This layer does not normalize, threshold, rescale, or rewrite auxiliary image files. Standard Nerfacto can ignore these metadata fields. InvNeRF-style datasets can read `dataparser_outputs.metadata["image_modalities"]["binary_img"]` and decide how to load and normalize masks for their own batches.
+
+When a modality is missing for a frame, the metadata list preserves a `null` entry instead of dropping or reindexing frames. This keeps RGB cameras, splits, and auxiliary paths aligned while making incomplete modality coverage explicit.
+
 ## Validation Plan
 
 The validation should check that the serialized contract is actually invariant:
