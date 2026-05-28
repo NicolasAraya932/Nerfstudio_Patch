@@ -63,11 +63,20 @@ from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
 from nerfstudio.plugins.registry import discover_methods
+from nerfstudio.utils.rich_utils import CONSOLE
 
 # Import your custom pieces
-from fruit_proposal.data.fruit_proposal_datamanager import FruitDataManagerConfig
-from fruit_proposal.data.fruit_proposal_dataparser import FruitProposalDataParserConfig
-from fruit_proposal.fruit_proposal import FruitProposalModelConfig
+try:
+    from fruit_proposal.data.fruit_proposal_datamanager import FruitDataManagerConfig
+    from fruit_proposal.data.fruit_proposal_dataparser import FruitProposalDataParserConfig
+    from fruit_proposal.fruit_proposal import FruitProposalModelConfig
+except ModuleNotFoundError as exc:
+    if exc.name != "fruit_proposal":
+        raise
+    FruitDataManagerConfig = None
+    FruitProposalDataParserConfig = None
+    FruitProposalModelConfig = None
+    CONSOLE.log("[yellow]Skipping FruitProposal method registration: fruit_proposal is not installed.")
 
 from roi_calculation.roi_model import RoiModelConfig
 
@@ -81,8 +90,6 @@ descriptions = {
     "mipnerf": "High quality model for bounded scenes. (slow)",
     "only-semantic-nerf": "Semantic NeRF model for binary semantics and density.",
     "roi_calculation": "ROI calculation model for semantic segmentation.",
-    "fruit-proposal_one": "Fruit proposal model for semantic segmentation.",
-    "fruit-proposal_two": "Fruit proposal model for semantic segmentation.",
     "semantic-nerfw": "Predicts semantic segmentations and filters out transient objects.",
     "vanilla-nerf": "Original NeRF model. (slow)",
     "tensorf": "tensorf",
@@ -132,32 +139,34 @@ method_configs["roi_calculation"] = TrainerConfig(
     vis="viewer",
 )
 
-method_configs["fruit-proposal"] = TrainerConfig(
-    method_name="fruit-proposal",
-    steps_per_eval_batch=100,
-    steps_per_eval_image=100,
-    steps_per_save=100,
-    max_num_iterations=30000,
-    mixed_precision=True,
-    pipeline=VanillaPipelineConfig(
-        datamanager=FruitDataManagerConfig(
-            dataparser=FruitProposalDataParserConfig(),
+if FruitProposalModelConfig is not None:
+    descriptions["fruit-proposal"] = "Fruit proposal model for semantic segmentation."
+    method_configs["fruit-proposal"] = TrainerConfig(
+        method_name="fruit-proposal",
+        steps_per_eval_batch=100,
+        steps_per_eval_image=100,
+        steps_per_save=100,
+        max_num_iterations=30000,
+        mixed_precision=True,
+        pipeline=VanillaPipelineConfig(
+            datamanager=FruitDataManagerConfig(
+                dataparser=FruitProposalDataParserConfig(),
+            ),
+            model=FruitProposalModelConfig(),
         ),
-        model=FruitProposalModelConfig(),
-    ),
-    optimizers={
-        "proposal_networks": {
-            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+        optimizers={
+            "proposal_networks": {
+                "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+            },
+            "fields": {
+                "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+            },
         },
-        "fields": {
-            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
-        },
-    },
-    viewer=ViewerConfig(num_rays_per_chunk=1 << 12),
-    vis="viewer",
-)
+        viewer=ViewerConfig(num_rays_per_chunk=1 << 12),
+        vis="viewer",
+    )
 
 #     optimizers={
 #         "proposal_networks": {

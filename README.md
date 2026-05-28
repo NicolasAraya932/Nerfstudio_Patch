@@ -1142,6 +1142,8 @@ scripts/train_nerfacto_invnerf.py \
 
 Dry-run the commands first with `--dry-run`. Use `--no-run-nerfacto` or `--no-run-invnerf` to train only one model.
 
+The training launcher runs an `ns-train` preflight by default. FruitProposal is an optional dependency in this fork; if `fruit_proposal` is not installed, the CLI skips only `fruit-proposal` / `fruit-proposal-data` registration and keeps `custom_nerfacto`, `inv-nerf`, and `nerfstudio-data` available.
+
 If Nerfacto was already trained, resume only the InvNeRF stage and load a known compatible checkpoint explicitly:
 
 ```bash

@@ -52,6 +52,13 @@ def _run(cmd: list[str], env: dict[str, str], dry_run: bool) -> None:
         subprocess.run(cmd, check=True, env=env)
 
 
+def _preflight_ns_train(env: dict[str, str], method: str) -> None:
+    """Fail before long jobs if the ns-train CLI cannot import the requested method."""
+    cmd = ["ns-train", method, "--help"]
+    print(f"preflight={' '.join(cmd)}")
+    subprocess.run(cmd, check=True, env=env, stdout=subprocess.DEVNULL)
+
+
 def _latest_checkpoint(checkpoint_dir: Path) -> Path:
     checkpoints = sorted(
         checkpoint_dir.glob("step-*.ckpt"),
@@ -144,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-nerfacto", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--run-invnerf", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--load-from-disk", action=argparse.BooleanOptionalAction, default=True, help="Use Nerfacto load-from-disk image loading.")
+    parser.add_argument("--preflight", action=argparse.BooleanOptionalAction, default=True, help="Run ns-train help checks before launching training.")
     parser.add_argument("--cpu", action="store_true", help="CPU smoke/debug mode. Adds torch model implementation flags.")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without running them.")
     return parser
@@ -187,6 +195,12 @@ def main() -> None:
             "Use the default --nerfacto-method custom_nerfacto, pass an explicit compatible "
             "--nerfacto-checkpoint, or disable bootstrap with --no-invnerf-load-nerfacto-checkpoint."
         )
+
+    if args.preflight:
+        if args.run_nerfacto:
+            _preflight_ns_train(env, args.nerfacto_method)
+        if args.run_invnerf:
+            _preflight_ns_train(env, "inv-nerf")
 
     if args.run_nerfacto:
         cmd = [

@@ -36,11 +36,18 @@ from nerfstudio.data.dataparsers.scannet_dataparser import ScanNetDataParserConf
 from nerfstudio.data.dataparsers.scannetpp_dataparser import ScanNetppDataParserConfig
 from nerfstudio.data.dataparsers.sdfstudio_dataparser import SDFStudioDataParserConfig
 from nerfstudio.data.dataparsers.sitcoms3d_dataparser import Sitcoms3DDataParserConfig
-from fruit_proposal.data.fruit_proposal_dataparser import FruitProposalDataParserConfig
 from nerfstudio.plugins.registry_dataparser import discover_dataparsers
+from nerfstudio.utils.rich_utils import CONSOLE
+
+try:
+    from fruit_proposal.data.fruit_proposal_dataparser import FruitProposalDataParserConfig
+except ModuleNotFoundError as exc:
+    if exc.name != "fruit_proposal":
+        raise
+    FruitProposalDataParserConfig = None
+    CONSOLE.log("[yellow]Skipping FruitProposal dataparser registration: fruit_proposal is not installed.")
 
 dataparsers = {
-    "fruit-proposal-data": FruitProposalDataParserConfig(),
     "nerfstudio-data": NerfstudioDataParserConfig(),
     "minimal-parser": MinimalDataParserConfig(),
     "arkit-data": ARKitScenesDataParserConfig(),
@@ -57,6 +64,8 @@ dataparsers = {
     "scannetpp-data": ScanNetppDataParserConfig(),
     "colmap": ColmapDataParserConfig(),
 }
+if FruitProposalDataParserConfig is not None:
+    dataparsers["fruit-proposal-data"] = FruitProposalDataParserConfig()
 
 external_dataparsers, _ = discover_dataparsers()
 all_dataparsers = {**dataparsers, **external_dataparsers}
