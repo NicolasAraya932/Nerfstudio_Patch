@@ -1109,3 +1109,21 @@ If you use this library or find the documentation useful for your research, plea
 <a href="https://github.com/nerfstudio-project/nerfstudio/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=nerfstudio-project/nerfstudio" />
 </a>
+
+### Reusable Nerfacto + InvNeRF Training Script
+
+Use `scripts/train_nerfacto_invnerf.py` to train both models from a prepared dataset with a frozen dataparser contract. The script validates `metadata/dataparser/contract.json`, preserves the contract downscale, and sets `PYTHONPATH` for both `Nerfstudio_Patch` and `InvNeRF-Seg` before launching `ns-train`.
+
+Example:
+
+```bash
+cd /workspace/Desktop/Repos/Nerfstudio_Patch
+
+scripts/train_nerfacto_invnerf.py \
+  --data /workspace/Desktop/DATASETS/IMAGES/hemispheres_indoor/hemisphere/bonzai_pro_hemisphere_0 \
+  --output-root /workspace/Desktop/Repos/HEMISPHERE_DATAPARSER_SERIALIZATION_TEST/bonzai_pro_hemisphere_0 \
+  --vis wandb \
+  --timestamp run_000
+```
+
+Dry-run the commands first with `--dry-run`. Use `--no-run-nerfacto` or `--no-run-invnerf` to train only one model.
