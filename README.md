@@ -1114,6 +1114,20 @@ If you use this library or find the documentation useful for your research, plea
 
 Use `scripts/train_nerfacto_invnerf.py` to train both models from a prepared dataset with a frozen dataparser contract. The script validates `metadata/dataparser/contract.json`, preserves the contract downscale, and sets `PYTHONPATH` for both `Nerfstudio_Patch` and `InvNeRF-Seg` before launching `ns-train`.
 
+By default the script trains `custom_nerfacto`, not stock `nerfacto`, because InvNeRF is a subclass of the project `CustomNerfactoModel`. After Nerfacto finishes, the script resolves the latest checkpoint from:
+
+```text
+<output-root>/nerfacto/<experiment>_nerfacto_ds<N>/custom_nerfacto/<timestamp>/nerfstudio_models/step-*.ckpt
+```
+
+and passes it into InvNeRF with:
+
+```text
+ns-train inv-nerf ... --load-checkpoint <latest-custom-nerfacto-checkpoint>
+```
+
+Do not bootstrap InvNeRF from a stock `nerfacto` checkpoint unless a compatible partial-initialization path is added. Stock Nerfacto uses a different model architecture, so a full `--load-checkpoint` can fail on appearance embeddings, hash-grid MLP tensors, proposal networks, or camera-optimizer tensors.
+
 Example:
 
 ```bash
@@ -1127,3 +1141,15 @@ scripts/train_nerfacto_invnerf.py \
 ```
 
 Dry-run the commands first with `--dry-run`. Use `--no-run-nerfacto` or `--no-run-invnerf` to train only one model.
+
+If Nerfacto was already trained, resume only the InvNeRF stage and load a known compatible checkpoint explicitly:
+
+```bash
+scripts/train_nerfacto_invnerf.py \
+  --data /workspace/Desktop/DATASETS/IMAGES/hemispheres_indoor/hemisphere/bonzai_pro_hemisphere_0 \
+  --output-root /workspace/Desktop/Repos/HEMISPHERE_DATAPARSER_SERIALIZATION_TEST/bonzai_pro_hemisphere_0 \
+  --no-run-nerfacto \
+  --nerfacto-checkpoint /path/to/custom_nerfacto/run_000/nerfstudio_models/step-000030000.ckpt \
+  --vis wandb \
+  --timestamp run_000
+```

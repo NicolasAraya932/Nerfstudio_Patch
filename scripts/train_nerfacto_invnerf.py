@@ -52,6 +52,35 @@ def _run(cmd: list[str], env: dict[str, str], dry_run: bool) -> None:
         subprocess.run(cmd, check=True, env=env)
 
 
+def _latest_checkpoint(checkpoint_dir: Path) -> Path:
+    checkpoints = sorted(
+        checkpoint_dir.glob("step-*.ckpt"),
+        key=lambda path: int(path.stem.split("-")[-1]),
+    )
+    if not checkpoints:
+        raise FileNotFoundError(f"No step-*.ckpt files found in {checkpoint_dir}")
+    return checkpoints[-1]
+
+
+def _default_nerfacto_checkpoint_dir(output_root: Path, experiment: str, method: str, timestamp: str) -> Path:
+    return output_root / "nerfacto" / experiment / method / timestamp / "nerfstudio_models"
+
+
+def _resolve_nerfacto_checkpoint(args: argparse.Namespace, output_root: Path, experiment: str) -> Path:
+    if args.nerfacto_checkpoint is not None:
+        checkpoint = args.nerfacto_checkpoint.expanduser().resolve()
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Explicit Nerfacto checkpoint does not exist: {checkpoint}")
+        return checkpoint
+    checkpoint_dir = _default_nerfacto_checkpoint_dir(
+        output_root,
+        experiment,
+        args.nerfacto_method,
+        args.timestamp,
+    )
+    return _latest_checkpoint(checkpoint_dir)
+
+
 def _add_common_train_args(cmd: list[str], args: argparse.Namespace, max_iters: int) -> list[str]:
     cmd.extend(
         [
@@ -82,8 +111,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-prefix", type=str, default=None, help="Experiment prefix. Defaults to dataset directory name.")
     parser.add_argument("--timestamp", type=str, default="run_000")
     parser.add_argument("--vis", type=str, default="wandb")
+    parser.add_argument(
+        "--nerfacto-method",
+        type=str,
+        default="custom_nerfacto",
+        choices=("custom_nerfacto", "nerfacto"),
+        help=(
+            "Nerfacto method to train. custom_nerfacto is the default because its "
+            "architecture matches InvNeRF and can be used as the InvNeRF bootstrap checkpoint."
+        ),
+    )
     parser.add_argument("--nerfacto-project-name", type=str, default=None)
     parser.add_argument("--invnerf-project-name", type=str, default=None)
+    parser.add_argument(
+        "--invnerf-load-nerfacto-checkpoint",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Pass the latest Nerfacto checkpoint to InvNeRF with --load-checkpoint.",
+    )
+    parser.add_argument(
+        "--nerfacto-checkpoint",
+        type=Path,
+        default=None,
+        help="Explicit Nerfacto checkpoint to load into InvNeRF. Defaults to the latest checkpoint from this run.",
+    )
     parser.add_argument("--nerfacto-iters", type=int, default=30000)
     parser.add_argument("--invnerf-iters", type=int, default=40000)
     parser.add_argument("--steps-per-save", type=int, default=5000)
@@ -126,12 +177,21 @@ def main() -> None:
     print(f"contract={_contract_path(data)}")
     print(f"downscale_factor={downscale} train={train_count} test={test_count}")
     print(f"output_root={output_root}")
+    print(f"nerfacto_method={args.nerfacto_method}")
     print(f"PYTHONPATH={env['PYTHONPATH']}")
+
+    if args.invnerf_load_nerfacto_checkpoint and args.nerfacto_method != "custom_nerfacto" and args.nerfacto_checkpoint is None:
+        raise ValueError(
+            "InvNeRF checkpoint bootstrap is enabled, but --nerfacto-method is 'nerfacto'. "
+            "The stock Nerfacto architecture is not checkpoint-compatible with InvNeRF in this project. "
+            "Use the default --nerfacto-method custom_nerfacto, pass an explicit compatible "
+            "--nerfacto-checkpoint, or disable bootstrap with --no-invnerf-load-nerfacto-checkpoint."
+        )
 
     if args.run_nerfacto:
         cmd = [
             "ns-train",
-            "nerfacto",
+            args.nerfacto_method,
             "--data",
             str(data),
             "--output-dir",
@@ -152,6 +212,16 @@ def main() -> None:
         _run(cmd, env, args.dry_run)
 
     if args.run_invnerf:
+        nerfacto_checkpoint = None
+        if args.invnerf_load_nerfacto_checkpoint:
+            if args.dry_run and args.nerfacto_checkpoint is None:
+                nerfacto_checkpoint = (
+                    _default_nerfacto_checkpoint_dir(output_root, nerfacto_exp, args.nerfacto_method, args.timestamp)
+                    / "step-<latest>.ckpt"
+                )
+            else:
+                nerfacto_checkpoint = _resolve_nerfacto_checkpoint(args, output_root, nerfacto_exp)
+            print(f"invnerf_bootstrap_checkpoint={nerfacto_checkpoint}")
         cmd = [
             "ns-train",
             "inv-nerf",
@@ -164,6 +234,8 @@ def main() -> None:
             "--timestamp",
             args.timestamp,
         ]
+        if nerfacto_checkpoint is not None:
+            cmd.extend(["--load-checkpoint", str(nerfacto_checkpoint)])
         if args.invnerf_project_name:
             cmd.extend(["--project-name", args.invnerf_project_name])
         _add_common_train_args(cmd, args, args.invnerf_iters)
