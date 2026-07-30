@@ -16,6 +16,7 @@
 Tools supporting the execution of COLMAP and preparation of COLMAP-based datasets for nerfstudio training.
 """
 
+import itertools
 import json
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Union
@@ -89,6 +90,137 @@ def get_vocab_tree() -> Path:
     return vocab_tree_filename
 
 
+def _filter_features_by_mask(features: Dict[str, Any], mask: np.ndarray) -> Dict[str, Any]:
+    """Drops ALIKED keypoints (and their descriptors/scores) that land on a masked-out pixel.
+
+    Args:
+        features: ALIKED extractor output for one image (batch dim of size 1).
+        mask: Single-channel mask following nerfstudio's convention: non-zero pixels are kept.
+    Returns:
+        The same dict with keypoints/descriptors/keypoint_scores subset to the kept indices.
+    """
+    keypoints = features["keypoints"][0]
+    height, width = mask.shape[:2]
+    xy = keypoints.round().long().cpu().numpy()
+    xy[:, 0] = np.clip(xy[:, 0], 0, width - 1)
+    xy[:, 1] = np.clip(xy[:, 1], 0, height - 1)
+    keep = torch.from_numpy(mask[xy[:, 1], xy[:, 0]] != 0).to(keypoints.device)
+
+    out = dict(features)
+    out["keypoints"] = features["keypoints"][:, keep]
+    out["descriptors"] = features["descriptors"][:, keep]
+    out["keypoint_scores"] = features["keypoint_scores"][:, keep]
+    return out
+
+
+def run_aliked_lightglue(
+    image_dir: Path,
+    colmap_dir: Path,
+    camera_model: CameraModel,
+    camera_mask_path: Optional[Path] = None,
+    gpu: bool = True,
+    verbose: bool = False,
+    num_keypoints: int = 4096,
+) -> None:
+    """Extracts ALIKED keypoints and matches them with LightGlue, writing the verified result
+    straight into a COLMAP-format database so GLOMAP can consume it unchanged.
+
+    This is an alternative front end to `run_colmap`'s default COLMAP/SIFT extractor and matcher,
+    for scenes with repetitive, non-rigid, or low-texture structure (e.g. foliage) where SIFT's
+    blob detector has low repeatability and nearest-neighbour matching is ambiguous between
+    near-identical patches. Pairing is exhaustive: the right tradeoff for the small
+    (n ≲ 300 images) single-subject captures this is intended for, not for large unordered
+    collections where exhaustive matching would invite false matches between look-alike objects.
+
+    Args:
+        image_dir: Path to the directory containing the images.
+        colmap_dir: Path to the output directory (the database is written to colmap_dir/database.db).
+        camera_model: Camera model to use.
+        camera_mask_path: Path to the camera mask.
+        gpu: If True, run ALIKED/LightGlue on the GPU when available.
+        verbose: If True, logs progress of extraction/matching.
+        num_keypoints: Max number of ALIKED keypoints to extract per image.
+    """
+    # Lazy imports: these are only needed for the ALIKED+LightGlue path, not the default SIFT path.
+    import pycolmap
+    from hloc.utils.database import COLMAPDatabase
+    from lightglue import ALIKED, LightGlue
+    from lightglue.utils import load_image, rbd
+
+    device = "cuda" if gpu and torch.cuda.is_available() else "cpu"
+
+    image_paths = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
+    assert len(image_paths) >= 2, f"Need at least 2 images in {image_dir}, found {len(image_paths)}"
+
+    mask = None
+    if camera_mask_path is not None:
+        mask = cv2.imread(str(camera_mask_path), cv2.IMREAD_GRAYSCALE)
+
+    database_path = colmap_dir / "database.db"
+    database_path.unlink(missing_ok=True)
+    db = COLMAPDatabase.connect(database_path)
+    db.create_tables()
+
+    # Single shared camera, matching the `--ImageReader.single_camera 1` behavior of the SIFT path.
+    first_image = cv2.imread(str(image_paths[0]))
+    height, width = first_image.shape[:2]
+    focal_length = 1.2 * max(width, height)  # COLMAP's own default heuristic when no EXIF prior is available
+    camera = pycolmap.Camera.create(
+        camera_id=1,
+        model=getattr(pycolmap.CameraModelId, camera_model.value),
+        focal_length=focal_length,
+        width=width,
+        height=height,
+    )
+    db.add_camera(int(camera.model), camera.width, camera.height, camera.params, camera_id=1)
+
+    extractor = ALIKED(max_num_keypoints=num_keypoints).eval().to(device)
+    features: Dict[Path, Any] = {}
+    image_ids: Dict[Path, int] = {}
+    iter_images = track(image_paths, description="Extracting ALIKED features...") if verbose else image_paths
+    for idx, image_path in enumerate(iter_images):
+        image_id = db.add_image(image_path.name, camera_id=1, image_id=idx + 1)
+        image_ids[image_path] = image_id
+        img = load_image(image_path).to(device)
+        feats = extractor.extract(img)
+        if mask is not None:
+            feats = _filter_features_by_mask(feats, mask)
+        features[image_path] = feats
+        db.add_keypoints(image_id, feats["keypoints"][0].cpu().numpy())
+    CONSOLE.log("[bold green]:tada: Done extracting ALIKED features.")
+
+    matcher = LightGlue(features="aliked").eval().to(device)
+    verification_options = pycolmap.TwoViewGeometryOptions()
+    verification_options.compute_relative_pose = True
+    pairs = list(itertools.combinations(image_paths, 2))
+    iter_pairs = track(pairs, description="Matching with LightGlue...") if verbose else pairs
+    for path1, path2 in iter_pairs:
+        result = matcher({"image0": features[path1], "image1": features[path2]})
+        feats0, feats1, result = (rbd(x) for x in (features[path1], features[path2], result))
+        matches = result["matches"].cpu().numpy().astype(np.uint32)
+        if len(matches) < 8:
+            continue
+        points1 = feats0["keypoints"].cpu().numpy().astype(np.float64)
+        points2 = feats1["keypoints"].cpu().numpy().astype(np.float64)
+        geometry = pycolmap.estimate_two_view_geometry(camera, points1, camera, points2, matches, verification_options)
+        image_id1, image_id2 = image_ids[path1], image_ids[path2]
+        db.add_matches(image_id1, image_id2, matches)
+        if len(geometry.inlier_matches) >= verification_options.min_num_inliers:
+            db.add_two_view_geometry(
+                image_id1,
+                image_id2,
+                geometry.inlier_matches,
+                F=geometry.F,
+                E=geometry.E,
+                H=geometry.H,
+                config=int(geometry.config),
+            )
+    CONSOLE.log("[bold green]:tada: Done matching ALIKED+LightGlue features.")
+
+    db.commit()
+    db.close()
+
+
 def run_colmap(
     image_dir: Path,
     colmap_dir: Path,
@@ -99,6 +231,7 @@ def run_colmap(
     matching_method: Literal["vocab_tree", "exhaustive", "sequential"] = "vocab_tree",
     refine_intrinsics: bool = True,
     colmap_cmd: str = "colmap",
+    feature_type: Literal["sift", "aliked"] = "sift",
 ) -> None:
     """Runs COLMAP on the images.
 
@@ -109,9 +242,14 @@ def run_colmap(
         camera_mask_path: Path to the camera mask.
         gpu: If True, use GPU.
         verbose: If True, logs the output of the command.
-        matching_method: Matching method to use.
+        matching_method: Matching method to use. Ignored when feature_type="aliked" (always exhaustive).
         refine_intrinsics: If True, refine intrinsics.
         colmap_cmd: Path to the COLMAP executable.
+        feature_type: "sift" runs COLMAP's default extractor+matcher (the SIFT front end). "aliked"
+            runs ALIKED+LightGlue instead (see `run_aliked_lightglue`), landing in the same
+            database.db so the GLOMAP step below is unchanged either way. Keep "sift" available as
+            a cross-check: if a GLOMAP reconstruction from the "aliked" path looks wrong, rerunning
+            with "sift" on the same images isolates whether the problem is the matches or the mapper.
     """
 
     colmap_version = get_colmap_version(colmap_cmd)
@@ -119,39 +257,51 @@ def run_colmap(
     colmap_database_path = colmap_dir / "database.db"
     colmap_database_path.unlink(missing_ok=True)
 
-    # Feature extraction
-    feature_extractor_cmd = [
-        f"{colmap_cmd} feature_extractor",
-        f"--database_path {colmap_dir / 'database.db'}",
-        f"--image_path {image_dir}",
-        "--ImageReader.single_camera 1",
-        f"--ImageReader.camera_model {camera_model.value}",
-        f"--SiftExtraction.use_gpu {int(gpu)}",
-    ]
-    if camera_mask_path is not None:
-        feature_extractor_cmd.append(f"--ImageReader.camera_mask_path {camera_mask_path}")
-    feature_extractor_cmd = " ".join(feature_extractor_cmd)
-    with status(msg="[bold yellow]Running COLMAP feature extractor...", spinner="moon", verbose=verbose):
-        run_command(feature_extractor_cmd, verbose=verbose)
+    if feature_type == "sift":
+        # Feature extraction
+        feature_extractor_cmd = [
+            f"{colmap_cmd} feature_extractor",
+            f"--database_path {colmap_dir / 'database.db'}",
+            f"--image_path {image_dir}",
+            "--ImageReader.single_camera 1",
+            f"--ImageReader.camera_model {camera_model.value}",
+            f"--SiftExtraction.use_gpu {int(gpu)}",
+        ]
+        if camera_mask_path is not None:
+            feature_extractor_cmd.append(f"--ImageReader.camera_mask_path {camera_mask_path}")
+        feature_extractor_cmd = " ".join(feature_extractor_cmd)
+        with status(msg="[bold yellow]Running COLMAP feature extractor...", spinner="moon", verbose=verbose):
+            run_command(feature_extractor_cmd, verbose=verbose)
 
-    CONSOLE.log("[bold green]:tada: Done extracting COLMAP features.")
+        CONSOLE.log("[bold green]:tada: Done extracting COLMAP features.")
 
-    # Feature matching
-    feature_matcher_cmd = [
-        f"{colmap_cmd} {matching_method}_matcher",
-        f"--database_path {colmap_dir / 'database.db'}",
-        f"--SiftMatching.use_gpu {int(gpu)}",
-    ]
-    if matching_method == "vocab_tree":
-        vocab_tree_filename = get_vocab_tree()
-        feature_matcher_cmd.append(f'--VocabTreeMatching.vocab_tree_path "{vocab_tree_filename}"')
-    feature_matcher_cmd = " ".join(feature_matcher_cmd)
-    with status(msg="[bold yellow]Running COLMAP feature matcher...", spinner="runner", verbose=verbose):
-        run_command(feature_matcher_cmd, verbose=verbose)
+        # Feature matching
+        feature_matcher_cmd = [
+            f"{colmap_cmd} {matching_method}_matcher",
+            f"--database_path {colmap_dir / 'database.db'}",
+            f"--SiftMatching.use_gpu {int(gpu)}",
+        ]
+        if matching_method == "vocab_tree":
+            vocab_tree_filename = get_vocab_tree()
+            feature_matcher_cmd.append(f'--VocabTreeMatching.vocab_tree_path "{vocab_tree_filename}"')
+        feature_matcher_cmd = " ".join(feature_matcher_cmd)
+        with status(msg="[bold yellow]Running COLMAP feature matcher...", spinner="runner", verbose=verbose):
+            run_command(feature_matcher_cmd, verbose=verbose)
 
-    CONSOLE.log("[bold green]:tada: Done matching COLMAP features.")
+        CONSOLE.log("[bold green]:tada: Done matching COLMAP features.")
+    elif feature_type == "aliked":
+        run_aliked_lightglue(
+            image_dir=image_dir,
+            colmap_dir=colmap_dir,
+            camera_model=camera_model,
+            camera_mask_path=camera_mask_path,
+            gpu=gpu,
+            verbose=verbose,
+        )
+    else:
+        raise ValueError(f"Unknown feature_type: {feature_type}")
 
-    # GLOMAP reconstructs the sparse model from the COLMAP feature database.
+    # GLOMAP reconstructs the sparse model from the feature database.
     sparse_dir = colmap_dir / "sparse"
     sparse_dir.mkdir(parents=True, exist_ok=True)
     mapper_cmd = [
