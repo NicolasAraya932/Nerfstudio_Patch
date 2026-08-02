@@ -10,8 +10,14 @@ from typing import Any, Dict, Literal, Optional
 import torch
 
 from nerfstudio.data.dataparsers.base_dataparser import DataparserOutputs
-from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
+from nerfstudio.data.dataparsers.nerfstudio_dataparser import MAX_AUTO_RESOLUTION, NerfstudioDataParserConfig
 from nerfstudio.utils.rich_utils import CONSOLE
+
+# Metadata keys the contract reader restores. Everything else in
+# DataparserOutputs.metadata is derived state that the reader ignores, so
+# freezing it only bloats the contract -- see _metadata_payload.
+CONTRACT_METADATA_PATH_KEYS = ("depth_filenames",)
+CONTRACT_METADATA_SCALAR_KEYS = ("depth_unit_scale_factor", "mask_color")
 
 
 @dataclass
@@ -71,15 +77,43 @@ def _relative_paths(paths: Optional[list[Optional[Path]]], root: Path) -> Option
 
 
 def _metadata_payload(outputs: DataparserOutputs, dataset_dir: Path) -> Dict[str, Any]:
-    """Serialize metadata while keeping auxiliary image modality paths dataset-relative."""
+    """Serialize the metadata the contract reader restores, and nothing else.
+
+    Mirrors ``_serialize_split`` in InvNeRF-Seg's
+    ``scripts/dataparser_contracts/build_standalone_contract.py``: an explicit
+    whitelist, not ``dict(outputs.metadata)``.
+
+    Dumping the whole dict was an out-of-memory trap. Dataparsers park bulk
+    tensors in metadata -- ``points3D_xyz``/``points3D_rgb`` when
+    ``load_3D_points`` is on, and whatever a downstream dataparser adds -- and
+    ``_jsonable`` expands a tensor into nested Python lists. That costs roughly
+    two orders of magnitude more RAM than the tensor itself (every float becomes
+    a boxed object) and writes all of it back out as JSON. The reader then throws
+    the whole lot away, because it only resolves image_modalities and
+    depth_filenames. So freeze the whitelist and drop the rest.
+    """
     metadata = dict(outputs.metadata)
-    image_modalities = metadata.get("image_modalities")
+    payload: Dict[str, Any] = {}
+
+    image_modalities = metadata.pop("image_modalities", None)
     if isinstance(image_modalities, dict):
-        metadata["image_modalities"] = {
+        payload["image_modalities"] = {
             str(key): _relative_paths(paths, dataset_dir)
             for key, paths in image_modalities.items()
         }
-    return _jsonable(metadata)
+
+    for key in CONTRACT_METADATA_PATH_KEYS:
+        payload[key] = _relative_paths(metadata.pop(key, None), dataset_dir)
+    for key in CONTRACT_METADATA_SCALAR_KEYS:
+        payload[key] = _jsonable(metadata.pop(key, None))
+
+    dropped = sorted(key for key, value in metadata.items() if value is not None)
+    if dropped:
+        CONSOLE.log(
+            f"[yellow]Dataparser contract: not freezing derived metadata {dropped} "
+            f"(the contract reader recomputes it; serializing it would inflate the contract)."
+        )
+    return payload
 
 
 def _camera_payload(outputs: DataparserOutputs) -> Dict[str, Any]:
@@ -124,6 +158,63 @@ def _build_nerfstudio_dataparser_config(dataset_dir: Path, contract: DataparserC
     )
 
 
+def _resolved_downscale_factor(dataparser: Any, outputs: DataparserOutputs) -> int:
+    """The downscale factor the dataparser actually used, not the one requested.
+
+    ``NerfstudioDataParser`` caches it on ``self.downscale_factor`` after the
+    first ``get_dataparser_outputs`` call. Fall back to reading it off the frozen
+    image paths (``images_4/...`` -> 4) for dataparsers that do not.
+    """
+    factor = getattr(dataparser, "downscale_factor", None)
+    if factor is not None:
+        return int(factor)
+    for path in outputs.image_filenames:
+        parent = Path(path).parent.name
+        if parent.startswith("images_") and parent[len("images_") :].isdigit():
+            return int(parent[len("images_") :])
+        if parent == "images":
+            return 1
+    return 1
+
+
+def _check_frozen_resolution(
+    dataset_dir: Path,
+    contract: DataparserContractConfig,
+    resolved_downscale: int,
+    outputs: DataparserOutputs,
+) -> None:
+    """Refuse to silently freeze full-resolution images.
+
+    Auto-selection walks down the powers of two only while the next
+    ``images_<2n>`` folder already exists, so running this before the downscale
+    step -- or on a dataset whose downscales were never generated -- silently
+    stops at 1 and freezes the originals. Training then loads those originals on
+    every ray batch and dies of OOM, long after the process step that caused it.
+    Pass ``downscale_factor`` explicitly to override, exactly as
+    build_standalone_contract.py's ``--downscale-factor`` requires.
+    """
+    if contract.downscale_factor is not None or resolved_downscale > 1:
+        return
+    width = int(torch.as_tensor(outputs.cameras.width).reshape(-1)[0])
+    height = int(torch.as_tensor(outputs.cameras.height).reshape(-1)[0])
+    if max(width, height) <= MAX_AUTO_RESOLUTION:
+        return
+    available = sorted(
+        int(child.name[len("images_") :])
+        for child in dataset_dir.iterdir()
+        if child.is_dir() and child.name.startswith("images_") and child.name[len("images_") :].isdigit()
+    )
+    raise RuntimeError(
+        f"Refusing to freeze a full-resolution dataparser contract for {dataset_dir}: auto downscale "
+        f"selection resolved to 1, so the contract would pin {width}x{height} images and every training "
+        f"run loading it would OOM.\n"
+        f"Downscaled folders present: {available or 'none'} (auto-selection needs images_2, then "
+        f"images_4, ... to exist before the contract is written).\n"
+        f"Fix: generate the downscales first, or set an explicit factor "
+        f"(ns-process-data ... --dataparser-contract.downscale-factor 2)."
+    )
+
+
 def serialize_dataparser_contract(
     dataset_dir: Path,
     contract: Optional[DataparserContractConfig] = None,
@@ -151,6 +242,15 @@ def serialize_dataparser_contract(
     dataparser = config.setup()
     train_outputs = dataparser.get_dataparser_outputs(split="train")
     test_outputs = dataparser.get_dataparser_outputs(split="test")
+
+    # The contract freezes image PATHS, so the resolution is decided here, once,
+    # forever. Record the factor the dataparser actually resolved -- writing the
+    # requested `None` back out leaves the contract unable to say what resolution
+    # it froze, which is how the ds2/ds4 mismatches got into the cherry datasets.
+    resolved_downscale = _resolved_downscale_factor(dataparser, train_outputs)
+    _check_frozen_resolution(dataset_dir, contract, resolved_downscale, train_outputs)
+    config.downscale_factor = resolved_downscale
+    contract.downscale_factor = resolved_downscale
 
     payload = {
         "schema_version": 1,
