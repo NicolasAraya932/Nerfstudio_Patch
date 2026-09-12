@@ -78,7 +78,13 @@ except ModuleNotFoundError as exc:
     FruitProposalModelConfig = None
     CONSOLE.log("[yellow]Skipping FruitProposal method registration: fruit_proposal is not installed.")
 
-from roi_calculation.roi_model import RoiModelConfig
+try:
+    from roi_calculation.roi_model import RoiModelConfig
+except ModuleNotFoundError as exc:
+    if exc.name != "roi_calculation":
+        raise
+    RoiModelConfig = None
+    CONSOLE.log("[yellow]Skipping roi_calculation method registration: roi_calculation is not installed.")
 
 method_configs: Dict[str, Union[TrainerConfig, ExternalMethodDummyTrainerConfig]] = {}
 descriptions = {
@@ -89,7 +95,6 @@ descriptions = {
     "instant-ngp-bounded": "Implementation of Instant-NGP. Recommended for bounded real and synthetic scenes",
     "mipnerf": "High quality model for bounded scenes. (slow)",
     "only-semantic-nerf": "Semantic NeRF model for binary semantics and density.",
-    "roi_calculation": "ROI calculation model for semantic segmentation.",
     "semantic-nerfw": "Predicts semantic segmentations and filters out transient objects.",
     "vanilla-nerf": "Original NeRF model. (slow)",
     "tensorf": "tensorf",
@@ -103,41 +108,43 @@ descriptions = {
 }
 
 # Nerfacto 
-method_configs["roi_calculation"] = TrainerConfig(
-    method_name="roi_calculation",
-    steps_per_eval_batch=500,
-    steps_per_save=2000,
-    max_num_iterations=30000,
-    mixed_precision=True,
-    pipeline=VanillaPipelineConfig(
-        datamanager=ParallelDataManagerConfig(
-            dataparser=NerfstudioDataParserConfig(),
-            train_num_rays_per_batch=4096,
-            eval_num_rays_per_batch=4096,
+if RoiModelConfig is not None:
+    descriptions["roi_calculation"] = "ROI calculation model for semantic segmentation."
+    method_configs["roi_calculation"] = TrainerConfig(
+        method_name="roi_calculation",
+        steps_per_eval_batch=500,
+        steps_per_save=2000,
+        max_num_iterations=30000,
+        mixed_precision=True,
+        pipeline=VanillaPipelineConfig(
+            datamanager=ParallelDataManagerConfig(
+                dataparser=NerfstudioDataParserConfig(),
+                train_num_rays_per_batch=4096,
+                eval_num_rays_per_batch=4096,
+            ),
+            model=RoiModelConfig(
+                eval_num_rays_per_chunk=1 << 15,
+                average_init_density=0.01,
+                camera_optimizer=CameraOptimizerConfig(mode="SO3xR3"),
+            ),
         ),
-        model=RoiModelConfig(
-            eval_num_rays_per_chunk=1 << 15,
-            average_init_density=0.01,
-            camera_optimizer=CameraOptimizerConfig(mode="SO3xR3"),
-        ),
-    ),
-    optimizers={
-        "proposal_networks": {
-            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+        optimizers={
+            "proposal_networks": {
+                "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+            },
+            "fields": {
+                "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
+            },
+            "camera_opt": {
+                "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
+                "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4, max_steps=5000),
+            },
         },
-        "fields": {
-            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=0.0001, max_steps=200000),
-        },
-        "camera_opt": {
-            "optimizer": AdamOptimizerConfig(lr=1e-3, eps=1e-15),
-            "scheduler": ExponentialDecaySchedulerConfig(lr_final=1e-4, max_steps=5000),
-        },
-    },
-    viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
-    vis="viewer",
-)
+        viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+        vis="viewer",
+    )
 
 if FruitProposalModelConfig is not None:
     descriptions["fruit-proposal"] = "Fruit proposal model for semantic segmentation."

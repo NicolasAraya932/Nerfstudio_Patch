@@ -55,7 +55,13 @@ from nerfstudio.pipelines.base_pipeline import Pipeline, VanillaPipeline
 from nerfstudio.utils.eval_utils import eval_setup
 from nerfstudio.utils.rich_utils import CONSOLE
 
-from fruit_proposal.data.fruit_proposal_datamanager import FruitDataManager
+try:
+    from fruit_proposal.data.fruit_proposal_datamanager import FruitDataManager
+except ModuleNotFoundError as exc:
+    if exc.name != "fruit_proposal":
+        raise
+    FruitDataManager = None
+    CONSOLE.log("[yellow]fruit_proposal is not installed; the FruitDataManager check is skipped.")
 
 
 @dataclass
@@ -242,10 +248,8 @@ class ExportEverythingFruitProposal(Exporter):
         _, pipeline, _, _ = eval_setup(self.load_config)
 
         # Ensure consistent batch size
-        assert isinstance(
-            pipeline.datamanager,
-            (FruitDataManager),
-        )
+        if FruitDataManager is not None:
+            assert isinstance(pipeline.datamanager, FruitDataManager)
         if isinstance(pipeline.datamanager, VanillaDataManager):
             assert pipeline.datamanager.train_pixel_sampler is not None
             pipeline.datamanager.train_pixel_sampler.num_rays_per_batch = self.num_rays_per_batch
@@ -325,10 +329,8 @@ class ExportSemanticRadianceField(Exporter):
         _, pipeline, _, _ = eval_setup(self.load_config)
 
         # Ensure consistent batch size
-        assert isinstance(
-            pipeline.datamanager,
-            (FruitDataManager),
-        )
+        if FruitDataManager is not None:
+            assert isinstance(pipeline.datamanager, FruitDataManager)
         if isinstance(pipeline.datamanager, VanillaDataManager):
             assert pipeline.datamanager.train_pixel_sampler is not None
             pipeline.datamanager.train_pixel_sampler.num_rays_per_batch = self.num_rays_per_batch
