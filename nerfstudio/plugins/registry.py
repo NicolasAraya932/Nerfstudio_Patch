@@ -23,7 +23,7 @@ import typing as t
 
 from nerfstudio.engine.trainer import TrainerConfig
 from nerfstudio.plugins.types import MethodSpecification
-from nerfstudio.utils.rich_utils import CONSOLE
+from nerfstudio.utils.rich_utils import CONSOLE, CONSOLE_ERR
 
 if sys.version_info < (3, 10):
     from importlib_metadata import entry_points
@@ -40,7 +40,19 @@ def discover_methods() -> t.Tuple[t.Dict[str, TrainerConfig], t.Dict[str, str]]:
     descriptions = {}
     discovered_entry_points = entry_points(group="nerfstudio.method_configs")
     for name in discovered_entry_points.names:
-        spec = discovered_entry_points[name].load()
+        try:
+            spec = discovered_entry_points[name].load()
+        except Exception as exc:  # noqa: BLE001 - a third-party plugin must not break nerfstudio
+            # Plugins are optional and live in other repos. Loading one imports that repo, so a
+            # package that is half-installed, moved, or broken took `ns-train` down at startup
+            # with its ModuleNotFoundError -- one at a time, with nothing naming the plugin that
+            # caused it. The env-var branch below has always tolerated this; the entry-point loop
+            # now does too.
+            CONSOLE_ERR.print(
+                f"[bold yellow]Warning: skipping method plugin '{name}': "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
         if not isinstance(spec, MethodSpecification):
             CONSOLE.print(
                 f"[bold yellow]Warning: Could not entry point {spec} as it is not an instance of MethodSpecification"

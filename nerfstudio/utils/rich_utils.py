@@ -22,6 +22,10 @@ from rich.progress import BarColumn, Progress, ProgressColumn, Task, TaskProgres
 from rich.text import Text
 
 CONSOLE = Console(width=120)
+# Diagnostics must not go to stdout: `ns-train --tyro-print-completion <shell>` writes the
+# generated completion script there, and ns-install-cli captures it verbatim into a file the
+# shell later sources. Anything printed on stdout at import time ends up inside that script.
+CONSOLE_ERR = Console(width=120, stderr=True)
 
 
 class ItersPerSecColumn(ProgressColumn):

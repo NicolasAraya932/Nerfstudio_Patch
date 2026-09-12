@@ -37,7 +37,7 @@ from nerfstudio.data.dataparsers.scannetpp_dataparser import ScanNetppDataParser
 from nerfstudio.data.dataparsers.sdfstudio_dataparser import SDFStudioDataParserConfig
 from nerfstudio.data.dataparsers.sitcoms3d_dataparser import Sitcoms3DDataParserConfig
 from nerfstudio.plugins.registry_dataparser import discover_dataparsers
-from nerfstudio.utils.rich_utils import CONSOLE
+from nerfstudio.utils.rich_utils import CONSOLE, CONSOLE_ERR
 
 try:
     from fruit_proposal.data.fruit_proposal_dataparser import FruitProposalDataParserConfig
@@ -45,7 +45,7 @@ except ModuleNotFoundError as exc:
     if exc.name != "fruit_proposal":
         raise
     FruitProposalDataParserConfig = None
-    CONSOLE.log("[yellow]Skipping FruitProposal dataparser registration: fruit_proposal is not installed.")
+    CONSOLE_ERR.log("[yellow]Skipping FruitProposal dataparser registration: fruit_proposal is not installed.")
 
 dataparsers = {
     "nerfstudio-data": NerfstudioDataParserConfig(),

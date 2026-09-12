@@ -31,6 +31,7 @@ if sys.version_info < (3, 10):
 else:
     from importlib.metadata import entry_points
 CONSOLE = Console(width=120)
+CONSOLE_ERR = Console(width=120, stderr=True)
 
 
 @dataclass
@@ -56,7 +57,16 @@ def discover_dataparsers() -> t.Tuple[t.Dict[str, DataParserConfig], t.Dict[str,
     descriptions = {}
     discovered_entry_points = entry_points(group="nerfstudio.dataparser_configs")
     for name in discovered_entry_points.names:
-        spec = discovered_entry_points[name].load()
+        try:
+            spec = discovered_entry_points[name].load()
+        except Exception as exc:  # noqa: BLE001 - a third-party plugin must not break nerfstudio
+            # Same reasoning as registry.discover_methods: a broken or half-installed plugin
+            # repo must not take nerfstudio down at import time.
+            CONSOLE_ERR.print(
+                f"[bold yellow]Warning: skipping dataparser plugin '{name}': "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
         if not isinstance(spec, DataParserSpecification):
             CONSOLE.print(
                 f"[bold yellow]Warning: Could not entry point {spec} as it is not an instance of DataParserSpecification"

@@ -53,7 +53,7 @@ from nerfstudio.fields.sdf_field import SDFField  # noqa
 from nerfstudio.models.splatfacto import SplatfactoModel
 from nerfstudio.pipelines.base_pipeline import Pipeline, VanillaPipeline
 from nerfstudio.utils.eval_utils import eval_setup
-from nerfstudio.utils.rich_utils import CONSOLE
+from nerfstudio.utils.rich_utils import CONSOLE, CONSOLE_ERR
 
 try:
     from fruit_proposal.data.fruit_proposal_datamanager import FruitDataManager
@@ -61,7 +61,7 @@ except ModuleNotFoundError as exc:
     if exc.name != "fruit_proposal":
         raise
     FruitDataManager = None
-    CONSOLE.log("[yellow]fruit_proposal is not installed; the FruitDataManager check is skipped.")
+    CONSOLE_ERR.log("[yellow]fruit_proposal is not installed; the FruitDataManager check is skipped.")
 
 
 @dataclass

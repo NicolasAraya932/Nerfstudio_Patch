@@ -63,7 +63,7 @@ from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
 from nerfstudio.plugins.registry import discover_methods
-from nerfstudio.utils.rich_utils import CONSOLE
+from nerfstudio.utils.rich_utils import CONSOLE, CONSOLE_ERR
 
 # Import your custom pieces
 try:
@@ -76,7 +76,7 @@ except ModuleNotFoundError as exc:
     FruitDataManagerConfig = None
     FruitProposalDataParserConfig = None
     FruitProposalModelConfig = None
-    CONSOLE.log("[yellow]Skipping FruitProposal method registration: fruit_proposal is not installed.")
+    CONSOLE_ERR.log("[yellow]Skipping FruitProposal method registration: fruit_proposal is not installed.")
 
 try:
     from roi_calculation.roi_model import RoiModelConfig
@@ -84,7 +84,7 @@ except ModuleNotFoundError as exc:
     if exc.name != "roi_calculation":
         raise
     RoiModelConfig = None
-    CONSOLE.log("[yellow]Skipping roi_calculation method registration: roi_calculation is not installed.")
+    CONSOLE_ERR.log("[yellow]Skipping roi_calculation method registration: roi_calculation is not installed.")
 
 method_configs: Dict[str, Union[TrainerConfig, ExternalMethodDummyTrainerConfig]] = {}
 descriptions = {
