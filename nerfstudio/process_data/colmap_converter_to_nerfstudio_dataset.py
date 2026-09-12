@@ -44,6 +44,11 @@ class ColmapConverterToNerfstudioDataset(BaseConverterToNerfstudioDataset):
     refine_intrinsics: bool = True
     """If True, do bundle adjustment to refine intrinsics.
     Only works with colmap sfm_tool"""
+    colmap_feature_type: Literal["sift", "aliked"] = "sift"
+    """Front end to use when sfm_tool is colmap: "sift" is COLMAP's own extractor+matcher; "aliked"
+    runs ALIKED+LightGlue instead (better repeatability/matching on repetitive or non-rigid
+    structure such as foliage), writing into the same database for the GLOMAP mapping step.
+    Matching is always exhaustive in the aliked case, regardless of --matching-method."""
     feature_type: Literal[
         "any",
         "sift",
@@ -219,6 +224,7 @@ class ColmapConverterToNerfstudioDataset(BaseConverterToNerfstudioDataset):
                 matching_method=self.matching_method,
                 refine_intrinsics=self.refine_intrinsics,
                 colmap_cmd=self.colmap_cmd,
+                feature_type=self.colmap_feature_type,
             )
         elif sfm_tool == "hloc":
             if mask_path is not None:
